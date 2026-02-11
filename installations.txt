@@ -1,0 +1,9 @@
+pip install "crewai[google-genai]"
+pip install geopandas
+pip install pandas
+pip install numpy
+pip install crewai
+pip install os
+pip install python-dotenv 
+pip install crewai_tools 
+pip install shapely
