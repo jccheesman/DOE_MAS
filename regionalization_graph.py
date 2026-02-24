@@ -214,6 +214,16 @@ def group_sites_by_region(bulk_fuel_csv_path, shapefile_path, region_column, con
         subset=['ASTFacilityLongitude', 'ASTFacilityLatitude']
     )
 
+    # Generate synthetic IDs for rows missing ASTFacilityID so no data is lost.
+    # Start synthetic IDs above the max existing ID to avoid collisions.
+    max_existing_id = int(bulk_fuel_data['ASTFacilityID'].max(skipna=True))
+    synthetic_id = max_existing_id + 1
+    for idx in bulk_fuel_data.index:
+        if pd.isna(bulk_fuel_data.at[idx, 'ASTFacilityID']):
+            bulk_fuel_data.at[idx, 'ASTFacilityID'] = synthetic_id
+            synthetic_id += 1
+    bulk_fuel_data['ASTFacilityID'] = bulk_fuel_data['ASTFacilityID'].astype(int)
+
     # Convert site coordinates to Point geometries
     geometry = [
         Point(xy) for xy in zip(
@@ -238,8 +248,6 @@ def group_sites_by_region(bulk_fuel_csv_path, shapefile_path, region_column, con
 
     # Load facilities and relationships into DuckDB
     for index, row in sites_with_regions.iterrows():
-        if pd.isna(row['ASTFacilityID']):
-            continue
         facility_id = int(row['ASTFacilityID'])
         region_value = row.get(region_column, None)
         longitude = row['ASTFacilityLongitude']
