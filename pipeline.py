@@ -82,6 +82,16 @@ def save_json(source_folder=".", output_folder_name="outputs", pattern="*.json")
     print(f"Total files copied: {len(json_files)}")
 
 
+def get_duckdb_connection(db_path='regionalization.duckdb', read_only=False):
+    """Connect to the shared DuckDB graph database.
 
+    Args:
+        db_path: Path to the DuckDB database file
+        read_only: If True, open in read-only mode (safe for concurrent reads)
 
+    Returns:
+        duckdb.DuckDBPyConnection
+    """
+    import duckdb
+    return duckdb.connect(db_path, read_only=read_only)
 
