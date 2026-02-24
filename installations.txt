@@ -5,5 +5,7 @@ pip install numpy
 pip install crewai
 pip install os
 pip install python-dotenv 
-pip install crewai_tools 
+pip install crewai_tools
 pip install shapely
+pip install duckdb
+pip install networkx
