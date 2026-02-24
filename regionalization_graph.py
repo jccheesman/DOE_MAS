@@ -238,6 +238,8 @@ def group_sites_by_region(bulk_fuel_csv_path, shapefile_path, region_column, con
 
     # Load facilities and relationships into DuckDB
     for index, row in sites_with_regions.iterrows():
+        if pd.isna(row['ASTFacilityID']):
+            continue
         facility_id = int(row['ASTFacilityID'])
         region_value = row.get(region_column, None)
         longitude = row['ASTFacilityLongitude']
