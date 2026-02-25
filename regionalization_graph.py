@@ -80,8 +80,10 @@ def init_duckdb_graph():
     """Initialize DuckDB with graph schema using DuckPGQ extension.
 
     Creates a persistent DuckDB database file (regionalization.duckdb) with:
-    - Node tables: regions, facilities
-    - Edge tables: located_in (facility -> region), adjacent_to (region <-> region)
+    - Node tables: regions, facilities, delivery_methods
+    - Edge tables: located_in (facility -> region),
+                   uses_method (facility -> delivery_method),
+                   adjacent_to (region <-> region)
 
     Returns:
         duckdb.DuckDBPyConnection: Configured connection with graph schema
@@ -156,6 +158,13 @@ def init_duckdb_graph():
         )
     """)
 
+    # Delivery methods node table
+    con.execute("""
+        CREATE TABLE delivery_methods (
+            method_name VARCHAR PRIMARY KEY
+        )
+    """)
+
     # --- Edge tables ---
 
     # located_in: facility -> region
@@ -164,6 +173,15 @@ def init_duckdb_graph():
             facility_id INTEGER REFERENCES facilities(facility_id),
             region_name VARCHAR REFERENCES regions(region_name),
             PRIMARY KEY (facility_id, region_name)
+        )
+    """)
+
+    # uses_method: facility -> delivery_method
+    con.execute("""
+        CREATE TABLE uses_method (
+            facility_id INTEGER REFERENCES facilities(facility_id),
+            method_name VARCHAR REFERENCES delivery_methods(method_name),
+            PRIMARY KEY (facility_id)
         )
     """)
 
@@ -182,13 +200,18 @@ def init_duckdb_graph():
         CREATE PROPERTY GRAPH fuel_network
         VERTEX TABLES (
             regions LABEL region,
-            facilities LABEL facility
+            facilities LABEL facility,
+            delivery_methods LABEL delivery_method
         )
         EDGE TABLES (
             located_in
                 SOURCE KEY (facility_id) REFERENCES facilities (facility_id)
                 DESTINATION KEY (region_name) REFERENCES regions (region_name)
                 LABEL located_in,
+            uses_method
+                SOURCE KEY (facility_id) REFERENCES facilities (facility_id)
+                DESTINATION KEY (method_name) REFERENCES delivery_methods (method_name)
+                LABEL uses_method,
             adjacent_to
                 SOURCE KEY (region_a) REFERENCES regions (region_name)
                 DESTINATION KEY (region_b) REFERENCES regions (region_name)
@@ -317,6 +340,22 @@ def group_sites_by_region(bulk_fuel_csv_path, shapefile_path, region_column, con
                 "INSERT INTO facilities VALUES (?, ?, ?, ?, ?)",
                 [facility_id, longitude, latitude, delivery_method, community_name]
             )
+
+            # Insert delivery_method node and uses_method edge
+            if delivery_method is not None:
+                existing_method = con.execute(
+                    "SELECT 1 FROM delivery_methods WHERE method_name = ?",
+                    [delivery_method]
+                ).fetchone()
+                if not existing_method:
+                    con.execute(
+                        "INSERT INTO delivery_methods VALUES (?)",
+                        [delivery_method]
+                    )
+                con.execute(
+                    "INSERT INTO uses_method VALUES (?, ?)",
+                    [facility_id, delivery_method]
+                )
 
         # Insert located_in edge
         if region_value is not None:
