@@ -86,7 +86,7 @@ def init_duckdb_graph():
     print("Initializing DuckDB graph database...")
     con = duckdb.connect(database=':memory:')
 
-    # Load DuckPGQ extension for graph support
+    # Load DuckPGQ extension for graph support.
     # Try community repository first; fall back to DuckPGQ S3 repository
     # if the extension hasn't been published for this DuckDB version yet.
     try:
@@ -94,7 +94,13 @@ def init_duckdb_graph():
         con.execute("LOAD duckpgq;")
     except Exception as e:
         print(f"Community install failed ({e}), trying DuckPGQ S3 repository...")
-        con.execute("SET allow_unsigned_extensions = true;")
+        # allow_unsigned_extensions must be set at connection time,
+        # so create a fresh connection with the config flag enabled.
+        con.close()
+        con = duckdb.connect(
+            database=':memory:',
+            config={'allow_unsigned_extensions': 'true'}
+        )
         con.execute(
             "SET custom_extension_repository = "
             "'http://duckpgq.s3.eu-north-1.amazonaws.com';"
