@@ -73,10 +73,13 @@ unassigned_dict = {}
 # DuckDB Graph Database Setup
 # ---------------------------------------------------------------------------
 
+DB_PATH = 'regionalization.duckdb'
+
+
 def init_duckdb_graph():
     """Initialize DuckDB with graph schema using DuckPGQ extension.
 
-    Creates an in-memory DuckDB connection with:
+    Creates a persistent DuckDB database file (regionalization.duckdb) with:
     - Node tables: regions, facilities
     - Edge tables: located_in (facility -> region), adjacent_to (region <-> region)
 
@@ -86,10 +89,14 @@ def init_duckdb_graph():
     print("Initializing DuckDB graph database...")
     db_version = duckdb.__version__
 
+    # Remove stale database file from a previous run so we start fresh.
+    if os.path.exists(DB_PATH):
+        os.remove(DB_PATH)
+
     # Enable allow_unsigned_extensions up front so we can fall back to
     # the DuckPGQ S3 repository without recreating the connection.
     con = duckdb.connect(
-        database=':memory:',
+        database=DB_PATH,
         config={'allow_unsigned_extensions': 'true'}
     )
 
