@@ -84,29 +84,48 @@ def init_duckdb_graph():
         duckdb.DuckDBPyConnection: Configured connection with graph schema
     """
     print("Initializing DuckDB graph database...")
-    con = duckdb.connect(database=':memory:')
+    db_version = duckdb.__version__
+
+    # Enable allow_unsigned_extensions up front so we can fall back to
+    # the DuckPGQ S3 repository without recreating the connection.
+    con = duckdb.connect(
+        database=':memory:',
+        config={'allow_unsigned_extensions': 'true'}
+    )
 
     # Load DuckPGQ extension for graph support.
     # Try community repository first; fall back to DuckPGQ S3 repository
     # if the extension hasn't been published for this DuckDB version yet.
+    installed = False
+
+    # 1. Community repository (signed, preferred)
     try:
         con.execute("INSTALL duckpgq FROM community;")
         con.execute("LOAD duckpgq;")
+        installed = True
     except Exception as e:
         print(f"Community install failed ({e}), trying DuckPGQ S3 repository...")
-        # allow_unsigned_extensions must be set at connection time,
-        # so create a fresh connection with the config flag enabled.
-        con.close()
-        con = duckdb.connect(
-            database=':memory:',
-            config={'allow_unsigned_extensions': 'true'}
+
+    # 2. DuckPGQ S3 repository (unsigned, latest builds)
+    if not installed:
+        try:
+            con.execute(
+                "SET custom_extension_repository = "
+                "'http://duckpgq.s3.eu-north-1.amazonaws.com';"
+            )
+            con.execute("FORCE INSTALL 'duckpgq';")
+            con.execute("LOAD 'duckpgq';")
+            installed = True
+        except Exception as e:
+            print(f"DuckPGQ S3 install failed ({e}).")
+
+    if not installed:
+        raise RuntimeError(
+            f"Failed to install DuckPGQ extension for DuckDB v{db_version}. "
+            f"The extension may not yet be available for this DuckDB version. "
+            f"Try pinning duckdb to an earlier version, e.g.: "
+            f"pip install 'duckdb>=1.1.3,<{db_version}'"
         )
-        con.execute(
-            "SET custom_extension_repository = "
-            "'http://duckpgq.s3.eu-north-1.amazonaws.com';"
-        )
-        con.execute("FORCE INSTALL 'duckpgq';")
-        con.execute("LOAD 'duckpgq';")
     print("DuckPGQ extension loaded successfully.")
 
     # --- Node tables ---
