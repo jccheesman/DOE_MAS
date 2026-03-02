@@ -1,11 +1,18 @@
-pip install "crewai[google-genai]"
-pip install geopandas
-pip install pandas
-pip install numpy
+# Python dependencies
 pip install crewai
-pip install os
-pip install python-dotenv 
 pip install crewai_tools
-pip install shapely
-pip install duckdb
-pip install networkx
+pip install geopandas pandas numpy shapely
+pip install duckdb networkx
+pip install matplotlib
+
+# Ollama setup (on Jetstream VM):
+# 1. Install Ollama: curl -fsSL https://ollama.com/install.sh | sh
+# 2. Pull the model: ollama pull llama3.1:70b
+# 3. Start server (bind to all interfaces for remote access):
+#    OLLAMA_HOST=0.0.0.0:11434 ollama serve
+#
+# On the client machine (where this code runs), set the environment variable:
+# export OLLAMA_API_BASE=http://<jetstream-ip>:11434
+#
+# Optionally override the model (default is llama3.1:70b):
+# export OLLAMA_MODEL=llama3.1:70b

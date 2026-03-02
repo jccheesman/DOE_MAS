@@ -35,9 +35,8 @@ import duckdb
 
 warnings.filterwarnings('ignore', category=DeprecationWarning)
 
-from crewai import Agent, Task, Crew, LLM, Process
+from crewai import Agent, Task, Crew, Process
 from crewai.tools import tool
-from dotenv import load_dotenv
 import pipeline
 
 # ---------------------------------------------------------------------------
@@ -566,14 +565,8 @@ def setup_agents(llm):
 
 def main():
     """Run the market & cost analysis pipeline."""
-    # LLM and API setup
-    with open('.env', 'w', encoding='utf-8') as f:
-        f.write(f"GEMINI_API_KEY={pipeline.get_api_key()}\n")
-        f.write("MODEL=gemini/gemini-2.5-flash-preview-04-17\n")
-
-    load_dotenv()
-    os.environ["GEMINI_API_KEY"] = pipeline.get_api_key()
-    llm = LLM(model='gemini/gemini-2.5-flash')
+    # LLM setup (Ollama on Jetstream)
+    llm = pipeline.get_llm()
 
     # Connect to graph database (read-only)
     connect_graph_db('regionalization.duckdb')

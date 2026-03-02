@@ -38,16 +38,24 @@ def get_shapefile(path):
 	return shapefile
 
 
-def get_api_key():
-	# Get the API key from an environment variable
-	api_key = os.getenv("GEMINI_API_KEY")
-	# Check if the key exists
-	if not api_key:
-	    raise ValueError("GEMINI_API_KEY environment variable not set. "
-	                    "Please set it before running the script."
-	else:
-		print("Gemini API configured successfully.")
-	return api_key
+def get_llm():
+	"""Return a configured LLM instance using Ollama.
+
+	Environment variables:
+		OLLAMA_API_BASE: Ollama server URL (default: http://localhost:11434)
+		OLLAMA_MODEL: Model to use (default: llama3.1:70b)
+	"""
+	from crewai import LLM
+
+	api_base = os.getenv("OLLAMA_API_BASE", "http://localhost:11434")
+	model_name = os.getenv("OLLAMA_MODEL", "llama3.1:70b")
+
+	os.environ["OLLAMA_API_BASE"] = api_base
+
+	model = f"ollama/{model_name}" if not model_name.startswith("ollama/") else model_name
+
+	print(f"LLM configured: {model} at {api_base}")
+	return LLM(model=model, base_url=api_base)
 
 
 def save_json(source_folder=".", output_folder_name="outputs", pattern="*.json"):

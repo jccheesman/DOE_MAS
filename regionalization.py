@@ -34,10 +34,8 @@ Outputs:
 
 import os
 import crewai
-from google.colab import userdata
-from crewai import Agent, Task, Crew, LLM, Process
+from crewai import Agent, Task, Crew, Process
 from crewai.tools import tool
-from dotenv import load_dotenv
 import pandas as pd
 import geopandas as gpd
 from shapely.geometry import Point
@@ -304,14 +302,8 @@ def save_as_csv():
 # --------------------------------------------------------------------------------
 #@title Set up Agents
 
-#Set LLM and API Key
-with open('.env', 'w', encoding='utf-8') as f:
-  f.write(f"GEMINI_API_KEY={pipeline.get_api_key()}\n")
-  f.write("MODEL=gemini/gemini-2.5-flash-preview-04-17\n")
-
-load_dotenv()
-os.environ["GEMINI_API_KEY"] = pipeline.get_api_key()
-llm=LLM(model='gemini/gemini-2.5-flash')
+# Set LLM (Ollama on Jetstream)
+llm = pipeline.get_llm()
 # --------------------------------------------------------------------------------
 
 
