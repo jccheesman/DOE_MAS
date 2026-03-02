@@ -542,10 +542,10 @@ def visualize_final_graph(con):
         WHERE li.region_name != 'Unassigned'
     """).fetchdf()
 
-    # Fetch adjacency edges (background context)
+    # Fetch connectivity edges (background context)
     adjacency_df = con.execute("""
         SELECT src, dst, distance_miles
-        FROM adjacent_to
+        FROM connects_to
         WHERE distance_miles <= 100
     """).fetchdf()
 
@@ -705,7 +705,7 @@ def query_facility_connections(region: str) -> str:
             pr.distance_miles AS route_distance
         FROM facilities f1
         JOIN located_in li ON f1.facility_id = li.facility_id
-        JOIN adjacent_to a ON f1.facility_id = a.src
+        JOIN connects_to a ON f1.facility_id = a.src
         JOIN facilities f2 ON f2.facility_id = a.dst
         LEFT JOIN uses_method um1 ON f1.facility_id = um1.facility_id
         LEFT JOIN uses_method um2 ON f2.facility_id = um2.facility_id
@@ -1038,7 +1038,7 @@ def main():
     print("\nGraph Database Summary:")
     for table in ['facilities', 'regions', 'delivery_methods',
                   'located_in', 'uses_method', 'adjacent_to',
-                  'part_of_route']:
+                  'connects_to', 'part_of_route']:
         count = graph_con.execute(
             f"SELECT COUNT(*) FROM {table}"
         ).fetchone()[0]

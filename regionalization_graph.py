@@ -33,6 +33,7 @@ Outputs:
 # Imports
 import os
 import json
+import math
 import duckdb
 import pandas as pd
 import geopandas as gpd
@@ -195,6 +196,29 @@ def init_duckdb_graph():
         )
     """)
 
+    # connects_to: facility <-> facility (all feasible links within
+    # the same region/delivery-method group)
+    con.execute("""
+        CREATE TABLE connects_to (
+            src INTEGER REFERENCES facilities(facility_id),
+            dst INTEGER REFERENCES facilities(facility_id),
+            distance_miles DOUBLE,
+            PRIMARY KEY (src, dst)
+        )
+    """)
+
+    # part_of_route: facility -> facility (optimized TSP tour edges)
+    con.execute("""
+        CREATE TABLE part_of_route (
+            src INTEGER REFERENCES facilities(facility_id),
+            dst INTEGER REFERENCES facilities(facility_id),
+            route_id INTEGER,
+            sequence INTEGER,
+            distance_miles DOUBLE,
+            PRIMARY KEY (src, dst, route_id, sequence)
+        )
+    """)
+
     # --- Create property graph ---
     con.execute("""
         CREATE PROPERTY GRAPH fuel_network
@@ -215,7 +239,15 @@ def init_duckdb_graph():
             adjacent_to
                 SOURCE KEY (region_a) REFERENCES regions (region_name)
                 DESTINATION KEY (region_b) REFERENCES regions (region_name)
-                LABEL adjacent_to
+                LABEL adjacent_to,
+            connects_to
+                SOURCE KEY (src) REFERENCES facilities (facility_id)
+                DESTINATION KEY (dst) REFERENCES facilities (facility_id)
+                LABEL connects_to,
+            part_of_route
+                SOURCE KEY (src) REFERENCES facilities (facility_id)
+                DESTINATION KEY (dst) REFERENCES facilities (facility_id)
+                LABEL part_of_route
         )
     """)
 
@@ -470,6 +502,80 @@ def build_adjacency_edges(shapefile_path, region_column, con):
                 adjacency_count += 1
 
     print(f"Built {adjacency_count} adjacency edges between regions.")
+
+
+def haversine_distance(lon1, lat1, lon2, lat2):
+    """Distance in miles between two (lon, lat) points using Haversine.
+
+    Source: https://community.esri.com/t5/coordinate-reference-systems-blog/
+    distance-on-a-sphere-the-haversine-formula/ba-p/902128
+    """
+    R = 3959  # Earth's radius in miles
+
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+
+    a = (math.sin(dlat / 2) ** 2 +
+         math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) *
+         math.sin(dlon / 2) ** 2)
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+    return R * c
+
+
+def build_facility_connections(con):
+    """Build connects_to edges: all pairwise facility links within each
+    (region, delivery_method) group.
+
+    For every pair of facilities that share the same region AND delivery
+    method, compute the Haversine distance and insert an edge.  These
+    represent the full set of candidate links that the TSP solver may
+    choose from.
+
+    Parameters:
+        con: DuckDB connection with populated facilities, located_in,
+             and uses_method tables.
+    """
+    rows = con.execute("""
+        SELECT f.facility_id, f.longitude, f.latitude,
+               li.region_name,
+               COALESCE(um.method_name, 'Unknown') AS method
+        FROM facilities f
+        JOIN located_in li ON f.facility_id = li.facility_id
+        LEFT JOIN uses_method um ON f.facility_id = um.facility_id
+        WHERE li.region_name != 'Unassigned'
+        ORDER BY li.region_name, method
+    """).fetchall()
+
+    # Group by (region, method)
+    from collections import defaultdict
+    groups = defaultdict(list)
+    for fid, lon, lat, region, method in rows:
+        groups[(region, method)].append((fid, lon, lat))
+
+    total_edges = 0
+    for (region, method), facilities in groups.items():
+        n = len(facilities)
+        for i in range(n):
+            fid_a, lon_a, lat_a = facilities[i]
+            for j in range(i + 1, n):
+                fid_b, lon_b, lat_b = facilities[j]
+                dist = haversine_distance(lon_a, lat_a, lon_b, lat_b)
+                # Insert both directions for undirected connectivity
+                con.execute(
+                    "INSERT INTO connects_to VALUES (?, ?, ?) "
+                    "ON CONFLICT DO NOTHING",
+                    [fid_a, fid_b, dist]
+                )
+                con.execute(
+                    "INSERT INTO connects_to VALUES (?, ?, ?) "
+                    "ON CONFLICT DO NOTHING",
+                    [fid_b, fid_a, dist]
+                )
+                total_edges += 1
+
+    print(f"Built {total_edges} facility connection edges "
+          f"across {len(groups)} (region, method) groups.")
 
 
 # ---------------------------------------------------------------------------
@@ -880,6 +986,9 @@ def run_regionalization(bulk_fuel_csv_path, shapefile_path, region_column=None):
 
     # Step 4: Build adjacency edges
     build_adjacency_edges(shapefile_path, region_column, duckdb_con)
+
+    # Step 4b: Build facility-to-facility connection edges
+    build_facility_connections(duckdb_con)
 
     # Step 5: Print graph summary
     query_graph_summary(duckdb_con)

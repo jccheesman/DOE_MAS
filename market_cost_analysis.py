@@ -116,7 +116,7 @@ def query_graph_regions() -> str:
         ORDER BY li.region_name, count DESC
     """).fetchdf()
 
-    # Adjacency stats per region
+    # Connectivity stats per region
     adj_stats = graph_con.execute("""
         SELECT
             li.region_name,
@@ -124,7 +124,7 @@ def query_graph_regions() -> str:
             ROUND(AVG(a.distance_miles), 1) AS avg_distance_miles,
             ROUND(MIN(a.distance_miles), 1) AS min_distance_miles,
             ROUND(MAX(a.distance_miles), 1) AS max_distance_miles
-        FROM adjacent_to a
+        FROM connects_to a
         JOIN located_in li ON a.src = li.facility_id
         GROUP BY li.region_name
         ORDER BY adjacency_edges DESC
@@ -174,7 +174,7 @@ def query_delivery_method_stats() -> str:
             ROUND(AVG(a.distance_miles), 1) AS avg_distance,
             ROUND(MIN(a.distance_miles), 1) AS min_distance,
             ROUND(MAX(a.distance_miles), 1) AS max_distance
-        FROM adjacent_to a
+        FROM connects_to a
         JOIN uses_method um1 ON a.src = um1.facility_id
         JOIN uses_method um2 ON a.dst = um2.facility_id
         WHERE um1.method_name = um2.method_name
