@@ -874,15 +874,20 @@ delivery_task = Task(
           - Assign the most common delivery method from that region
           - If the region has mixed methods, assign based on geographic proximity patterns
           - With the facility ID and delivery method, add to the dictionary using add_new_delivery_methods tool.
-        b. If sites have multiple delivery methods (e.g., 'Plane or Road'):
-          - Keep these sites and groupings as is.
+        b. If sites have multiple delivery methods (e.g., 'Plane or Barge', 'Plane or Road'):
+          - Resolve to a single delivery method using cost-risk analysis.
+          - Consider these cost factors per mile: Road ~$2-5, Barge ~$1-3, Plane ~$8-15.
+          - Consider these risk factors: weather/ice impact on barges, road conditions for trucks, visibility for planes.
+          - Consider the site's geographic context (coastal sites may favor barge, inland sites may favor road).
+          - Assign the single most cost-effective and lowest-risk method.
+          - Update the site using the add_new_delivery_methods tool with the chosen single method.
   2. Once complete, return the dictionary in the same format as the input dictionary using the update_facility_dictionary tool""",
     agent=delivery_method_agent,
     expected_output=
     '''In JSON format:
     - The complete modified dictionary with all delivery methods assigned
     - Summary of each newly added delivery method (if no delivery method was present).
-    - Summary of sights that have more than 1 delivery method.''',
+    - Summary of each resolved multi-method site, showing the original methods and the single method chosen with brief reasoning.''',
     verbose=True
 )
 
