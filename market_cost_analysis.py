@@ -228,7 +228,9 @@ def setup_agents(llm):
                   "knowledge of Alaska's unique fuel market. You specialize in "
                   "analyzing price trends, demand patterns, supply chain "
                   "dynamics, and regulatory factors that affect fuel delivery "
-                  "costs in remote and Arctic regions.",
+                  "costs in remote and Arctic regions. You are encouraged to "
+                  "draw on broad domain knowledge, research, and market "
+                  "intelligence to provide a comprehensive macro-level view.",
         verbose=True,
         llm=llm
     )
@@ -249,7 +251,10 @@ def setup_agents(llm):
            different delivery methods
 
         Present your findings in a clear narrative style with specific data
-        points and examples where possible.""",
+        points and examples where possible.
+
+        Focus on market-wide economics and macro trends. Leave facility-
+        specific and graph-database analysis to the Delivery Method Analyst.""",
         agent=market_dynamics_analyst,
         expected_output="A comprehensive market dynamics analysis covering "
                        "fuel prices, demand patterns, transportation rates, "
@@ -267,7 +272,10 @@ def setup_agents(llm):
                   "Alaska's extreme climate, seasonal variations, and "
                   "infrastructure limitations create unique challenges for "
                   "fuel delivery. You specialize in analyzing the interplay "
-                  "between environmental conditions and economic viability.",
+                  "between environmental conditions and economic viability. "
+                  "You are encouraged to explore broadly, drawing on research, "
+                  "policy knowledge, and environmental science to provide "
+                  "context that goes beyond the immediate dataset.",
         verbose=True,
         llm=llm
     )
@@ -310,8 +318,10 @@ def setup_agents(llm):
                   "real bulk fuel facility data organized as a property "
                   "graph with facilities, regions, and delivery methods as "
                   "distinct nodes connected by typed edges (located_in, "
-                  "uses_method, adjacent_to). Use your tools to query this "
-                  "database and ground your analysis in real data.",
+                  "uses_method, adjacent_to). You must query this database "
+                  "and ground your analysis strictly in the returned data. "
+                  "Do not fabricate facility names, counts, distances, or "
+                  "statistics — only report what the tools return.",
         verbose=True,
         llm=llm,
         tools=[query_graph_facilities, query_graph_regions,
@@ -319,8 +329,12 @@ def setup_agents(llm):
     )
 
     delivery_method_task = Task(
-        description="""Analyze fuel delivery methods in Alaska using both
-        your domain expertise and the graph database:
+        description="""Analyze fuel delivery methods in Alaska using the
+        graph database as your primary source of truth:
+
+        IMPORTANT: Query the graph database FIRST. Base your analysis on
+        the actual data returned by your tools. Do not invent or assume
+        facility details, counts, or distances not present in the data.
 
         1. Use query_graph_regions to understand the regional structure of
            bulk fuel facilities. How many facilities are in each region?
@@ -330,19 +344,20 @@ def setup_agents(llm):
            by method?
         3. Use query_graph_facilities to examine specific facility data
            and identify patterns in how facilities are distributed
-        4. For each major delivery method (Barge, Plane, Road), research:
-           - Current operational costs and trends
-           - Infrastructure requirements and limitations
-           - Reliability and seasonal availability
-           - Advantages and disadvantages for different regions
+        4. For each delivery method found in the graph data, summarize:
+           - How many facilities use it and in which regions
+           - Distance patterns (avg, min, max) from the graph
+           - Regional concentration or spread
+           Do NOT research general market costs — that is the Market
+           Dynamics Analyst's responsibility.
         5. Analyze how the graph structure reveals delivery patterns:
            - Which regions are most dependent on a single delivery method?
            - Where do mixed methods (e.g., 'Plane or Road') indicate
              infrastructure flexibility?
            - How do adjacency distances relate to delivery method choices?
 
-        Present your analysis combining graph-derived insights with
-        domain expertise.""",
+        Present your analysis grounded in graph-derived data, using
+        domain expertise only to interpret patterns found in the data.""",
         agent=delivery_method_analyst,
         expected_output="A comprehensive delivery method analysis combining "
                        "graph database insights with research on costs, "
@@ -379,7 +394,10 @@ def setup_agents(llm):
                   "a contrarian mindset. You have decades of experience in "
                   "Arctic supply chains and excel at identifying flaws in "
                   "reasoning, finding alternative explanations, and ensuring "
-                  "that recommendations are grounded in operational reality.",
+                  "that recommendations are grounded in operational reality. "
+                  "Pay special attention to whether claims about facilities, "
+                  "regions, and delivery patterns are supported by the graph "
+                  "database data rather than assumed.",
         verbose=True,
         llm=llm
     )
