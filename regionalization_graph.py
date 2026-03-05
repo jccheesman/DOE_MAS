@@ -857,7 +857,7 @@ llm = LLM(model='gemini/gemini-2.5-flash')
 delivery_method_agent = Agent(
     role="Delivery Method Coordinator",
     goal="Analyze each bulk fuel facility site's delivery method to ensure each has a set delivery method.",
-    backstory="""Expert in logistics and market analysis, with a focus on regional fuel delivery in Alaska, specifcally delivey methods.""",
+    backstory="""Expert in logistics and market analysis, with a focus on regional fuel delivery in Alaska, specifically delivery methods. Bases all decisions strictly on facility data and the graph database rather than assumptions.""",
     verbose=True,
     llm=llm,
     tools=[add_new_delivery_methods, get_facility_dictionary, update_facility_dictionary]
@@ -866,6 +866,10 @@ delivery_method_agent = Agent(
 delivery_task = Task(
     description=f"""
     Use the get_facility_dictionary tool to retrieve the current facility data.
+
+    IMPORTANT: Base all decisions on the actual facility data retrieved from the dictionary.
+    Do not infer or assume delivery methods beyond what is present in the data.
+    Only assign delivery methods that already exist in the dataset (Road, Barge, Plane).
 
     Complete the following tasks:
     1. Analyze the dictionary to ensure each site has a delivery method specified.
@@ -898,7 +902,9 @@ logistics_agent = Agent(
     backstory='''Expert in Alaska's geography and logistics with practical experience in fuel delivery
     operations. Knows the general operational limits of road, plane, and barge delivery methods in Alaska's
     unique environment. Provides straightforward assessments of whether route groupings make practical sense
-    based on distance, geography, and delivery method capabilities.''',
+    based on distance, geography, and delivery method capabilities. Grounds all assessments in the actual
+    facility data — references real facility counts, coordinates, and delivery methods from the dataset
+    rather than making assumptions.''',
     verbose=True,
     llm=llm,
     tools=[save_json]
@@ -907,6 +913,10 @@ logistics_agent = Agent(
 logistics_task = Task(
     description=f"""
     Review the updated dictionary provided in the previous task:{final_regionalized_dict}
+
+    IMPORTANT: Ground your assessment in the actual data provided. Reference specific facility
+    counts, coordinates, and delivery methods from the dictionary. Do not assume or fabricate
+    details about regions, sites, or routes that are not present in the data.
 
     For each grouping (e.g., 'Road - Railbelt', 'Plane - North Slope'),
     provide a general assessment of whether the grouping is realistic and practical.
