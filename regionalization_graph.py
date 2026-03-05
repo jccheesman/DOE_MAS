@@ -992,9 +992,6 @@ def run_regionalization(bulk_fuel_csv_path, shapefile_path, region_column=None):
     # Step 4: Build adjacency edges
     build_adjacency_edges(shapefile_path, region_column, duckdb_con)
 
-    # Step 4b: Build facility-to-facility connection edges
-    build_facility_connections(duckdb_con)
-
     # Step 5: Print graph summary
     query_graph_summary(duckdb_con)
 
@@ -1003,7 +1000,7 @@ def run_regionalization(bulk_fuel_csv_path, shapefile_path, region_column=None):
     plot_by_regions(regional_dict, unassigned_dict)
     final_regionalized_dict = group_by_delivery_method(regional_dict)
 
-    # Step 7: Run CrewAI
+    # Step 7: Run CrewAI (resolves multi-method sites and assigns missing delivery methods)
     print("Running CrewAI approach...")
     print("=" * 50)
 
@@ -1022,6 +1019,9 @@ def run_regionalization(bulk_fuel_csv_path, shapefile_path, region_column=None):
     print("CREW EXECUTION COMPLETE")
     print("=" * 50)
     print(result)
+
+    # Step 8: Build facility connection edges AFTER agents have finalized delivery methods
+    build_facility_connections(duckdb_con)
 
     return final_regionalized_dict
 
