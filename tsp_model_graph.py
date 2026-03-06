@@ -8,9 +8,10 @@ dictionaries, it queries the shared DuckDB graph database for facility
 data and writes computed routes back to the graph as edges.
 
 Agents:
-    - TSP Route Optimizer: Analyzes computed routes
+    - TSP Route Optimizer: Queries graph DB for computed route data
     - Cost Estimator: Assigns cost values to route segments
     - Operational Risk Agent: Assesses segment risks
+    - Route Analyzer: Assesses route quality using cost + risk inputs
     - Writing Agent: Synthesizes findings into a report
     - Contrarian Agent: Provides critical review
 
@@ -777,44 +778,46 @@ def setup_agents(llm, tsp_results_dict, input_report):
 
     # ----- Agent 1: TSP Route Optimizer -----
     tsp_agent = Agent(
-        role="Route Optimizer and Analyst",
-        goal="Analyze the optimized delivery routes and provide insightful "
-             "analysis considering the Alaskan context. Use graph database "
-             "tools to examine route details.",
-        backstory="Expert in Traveling Salesperson solutions and data "
-                  "analysis, specializing in logistical challenges in remote "
-                  "environments. You have access to a graph database "
-                  "containing facility data and computed routes.",
+        role="TSP Route Optimizer",
+        goal="Query the graph database for computed TSP routes and present "
+             "accurate route data including distances, segments, and "
+             "facility connections for each region and delivery method.",
+        backstory="Expert in Traveling Salesperson solutions with access to "
+                  "a DuckDB graph database containing facility data and "
+                  "computed routes. You must query the database and report "
+                  "only what the data shows. Do not fabricate route details, "
+                  "distances, or facility information — only report what "
+                  "the tools return.",
         verbose=True,
         llm=llm,
         tools=[query_tsp_routes, query_facility_connections, get_route_summary]
     )
 
     tsp_task = Task(
-        description=f"""Analyze the optimized delivery routes computed by the
-        TSP algorithm. The routes are stored in the graph database.
+        description=f"""Retrieve and summarize the optimized delivery routes
+        from the graph database.
 
-        Use the get_route_summary tool to get an overview of all routes.
-        Use the query_tsp_routes tool for detailed route statistics.
+        IMPORTANT: Base your output strictly on data returned by your tools.
+        Do not invent or assume route details not present in the data.
+
+        1. Use get_route_summary to get an overview of all routes
+           (total distance, segment counts, facilities per route).
+        2. Use query_tsp_routes for detailed per-route statistics
+           (avg/min/max segment distances by region and delivery method).
+        3. For each region, use query_facility_connections to report
+           facility connections and route membership.
 
         The TSP results summary: {json.dumps(tsp_results_dict, indent=2)[:3000]}
 
-        Analyze the route data and consider:
-        1. Are the computed routes efficient? Look at segment distances
-           and identify any unusually long segments.
-        2. For each region/delivery method group, assess whether the route
-           makes geographic sense.
-        3. Groups with 'Unknown' delivery method: recommend which method
-           to assign based on proximity to other groups.
-        4. Provide contextual recommendations considering Alaska's challenges:
-           limited road access, seasonal variations, reliance on air/barge.
-        5. Identify routes that might benefit from alternative groupings
-           or delivery methods.
+        Note: Delivery method assignment was already handled in the
+        regionalization step. Do not reassign or recommend delivery methods.
 
-        Present your analysis in a clear text format.""",
+        Present the route data in a clear, structured format. Report the
+        facts — leave analysis and recommendations to other agents.""",
         agent=tsp_agent,
-        expected_output="A detailed analysis and recommendations based on "
-                       "the computed route data from the graph database."
+        expected_output="A structured summary of all computed routes with "
+                       "distances, segment counts, and facility details "
+                       "from the graph database."
     )
 
     # ----- Agent 2: Cost Estimator -----
@@ -891,7 +894,53 @@ def setup_agents(llm, tsp_results_dict, input_report):
         expected_output="An informed cost-risk assessment for each route."
     )
 
-    # ----- Agent 4: Writing Agent -----
+    # ----- Agent 4: Route Analyzer -----
+    route_analyzer_agent = Agent(
+        role="Route Analyzer",
+        goal="Assess whether computed delivery routes are practical, "
+             "cost-effective, and operationally sound by synthesizing "
+             "route data, cost estimates, and risk assessments.",
+        backstory="Expert in logistics network analysis with deep knowledge "
+                  "of Alaska's geography and fuel delivery constraints. "
+                  "You evaluate route quality by combining route data with "
+                  "cost and risk inputs from other agents. You identify "
+                  "routes that are too long, too costly, or ineffective "
+                  "and recommend improvements.",
+        verbose=True,
+        llm=llm
+    )
+
+    route_analysis_task = Task(
+        description="""Analyze the computed delivery routes using the route
+        data from the TSP Route Optimizer, cost estimates from the Cost
+        Estimator, and risk assessments from the Operational Risk Analyst.
+
+        For each region/delivery method route, assess:
+        1. **Efficiency:** Are there unusually long segments that suggest
+           the route could be improved? Does the route make geographic sense?
+        2. **Cost-effectiveness:** Based on cost estimates, which routes
+           have the highest cost per mile or per facility? Are there
+           cheaper alternatives?
+        3. **Operational viability:** Based on risk assessments, which
+           routes face the highest operational risk? Are high-cost routes
+           also high-risk?
+        4. **Recommendations:** Identify routes that might benefit from
+           alternative groupings, delivery methods, or splitting into
+           sub-routes.
+
+        Note: Delivery method assignment and resolution of dual methods
+        was already handled in the regionalization step. Do not reassign
+        delivery methods — focus on route quality assessment.
+
+        Provide a clear assessment for each route with actionable
+        recommendations.""",
+        agent=route_analyzer_agent,
+        context=[tsp_task, cost_estimation_task, operational_risk_task],
+        expected_output="A route-by-route assessment with efficiency, cost, "
+                       "and risk evaluations plus actionable recommendations."
+    )
+
+    # ----- Agent 5: Writing Agent -----
     writing_agent = Agent(
         role="Fuel Delivery Analyst and Report Writer",
         goal="Write an engaging report with analysis and actionable "
@@ -905,14 +954,17 @@ def setup_agents(llm, tsp_results_dict, input_report):
 
     multi_agent_discussion_task = Task(
         description="""Lead a discussion synthesizing findings from the
-        TSP Agent, Cost Estimator, and Operational Risk Agent.
+        TSP Route Optimizer, Route Analyzer, Cost Estimator, and
+        Operational Risk Agent.
 
-        * TSP Agent: Route optimization findings, segment analysis
+        * TSP Route Optimizer: Route data from the graph database
+        * Route Analyzer: Route efficiency, cost-effectiveness, and
+          viability assessments with recommendations
         * Cost Estimator: Cost estimates per segment/route
         * Operational Risk Agent: Risk assessments and alternatives
 
         As moderator:
-        1. Synthesize route optimization, cost, and risk findings
+        1. Synthesize route data, analysis, cost, and risk findings
         2. Identify key trade-offs (cost vs. risk vs. efficiency)
         3. Ask clarifying questions about:
            - How do cost and risk interact for different delivery methods?
@@ -986,18 +1038,19 @@ def setup_agents(llm, tsp_results_dict, input_report):
     )
 
     agents = [tsp_agent, cost_estimator_agent, operational_risk_agent,
-              writing_agent, contrarian_agent]
+              route_analyzer_agent, writing_agent, contrarian_agent]
 
     tasks = [
-        tsp_task,                      # Phase 1: Route analysis
+        tsp_task,                      # Phase 1: Route data retrieval (data-grounded)
         cost_estimation_task,          # Phase 1: Cost estimation
         operational_risk_task,         # Phase 1: Risk assessment
         operational_cost_discussion,   # Phase 2: Cost-risk discussion
-        multi_agent_discussion_task,   # Phase 2: Multi-agent synthesis
-        contrarian_task,               # Phase 3: Contrarian review
-        writing_response_task,         # Phase 3: Writing response
-        contrarian_followup_task,      # Phase 3: Contrarian follow-up
-        writing_task                   # Phase 4: Final report
+        route_analysis_task,           # Phase 2: Route analysis (uses cost + risk)
+        multi_agent_discussion_task,   # Phase 3: Multi-agent synthesis
+        contrarian_task,               # Phase 4: Contrarian review
+        writing_response_task,         # Phase 4: Writing response
+        contrarian_followup_task,      # Phase 4: Contrarian follow-up
+        writing_task                   # Phase 5: Final report
     ]
 
     return agents, tasks
