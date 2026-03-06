@@ -44,7 +44,7 @@ def get_api_key():
 	# Check if the key exists
 	if not api_key:
 	    raise ValueError("GEMINI_API_KEY environment variable not set. "
-	                    "Please set it before running the script."
+	                    "Please set it before running the script.")
 	else:
 		print("Gemini API configured successfully.")
 	return api_key
