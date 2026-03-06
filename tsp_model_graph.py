@@ -43,7 +43,6 @@ import duckdb
 import networkx as nx
 import matplotlib.pyplot as plt
 import geopandas as gpd
-from collections import defaultdict, namedtuple
 from typing import Set, List, Tuple, Iterable, Callable, Dict
 
 from crewai import Agent, Task, Crew, LLM, Process
@@ -214,38 +213,6 @@ def first(collection):
 
 
 # ===========================================================================
-# Named Tuples (unchanged)
-# ===========================================================================
-
-class RegionalTourResult(namedtuple('_', 'region, tour, length, secs, num_sites')):
-    """Result for a single region's TSP tour."""
-    def __repr__(self):
-        return (f"Region: {self.region:>20} | Sites: {self.num_sites:>3} | "
-                f"Length: {round(self.length):>6,d} miles | Time: {self.secs:6.3f}s")
-
-
-all_results = defaultdict(list)
-
-
-class Result(namedtuple('_', 'tsp, opt, tour, cities, secs')):
-    """A Result records the results of a run on a TSP."""
-    def __repr__(self):
-        best = min(
-            [tour_length(r.tour) for r in all_results[self.cities]],
-            default=tour_length(self.tour)
-        )
-        return (
-            f"{name(self.tsp, self.opt):>25}: length "
-            f"{round(tour_length(self.tour)):,d} tour "
-            f"({tour_length(self.tour) / best:5.1%}) in {self.secs:6.3f} secs"
-        )
-
-
-def name(tsp, opt=None) -> str:
-    return tsp.__name__ + (('+' + opt.__name__) if opt else '')
-
-
-# ===========================================================================
 # Visualization Helpers (unchanged)
 # ===========================================================================
 
@@ -322,7 +289,8 @@ def run_regional_tsp(con, tsp_algo=greedy_tsp, optimize=True):
         optimize: Whether to apply 2-opt optimization (default: True)
 
     Returns:
-        results: nested dict results[region][method] = RegionalTourResult
+        results: nested dict results[region][method] = dict with keys:
+                 region, tour, length, secs, num_sites
         facility_maps: dict mapping (region, method) -> {complex: facility_id}
     """
     groups, facility_maps = get_regional_cities(con)
@@ -344,13 +312,13 @@ def run_regional_tsp(con, tsp_algo=greedy_tsp, optimize=True):
             t1 = time.perf_counter()
 
             length = tour_length(tour)
-            results[region][method] = RegionalTourResult(
-                region=region,
-                tour=tour,
-                length=length,
-                secs=t1 - t0,
-                num_sites=len(cities)
-            )
+            results[region][method] = {
+                'region': region,
+                'tour': tour,
+                'length': length,
+                'secs': t1 - t0,
+                'num_sites': len(cities)
+            }
             print(f"  {region} / {method}: {len(cities)} sites, "
                   f"{length:.0f} mi, {t1 - t0:.3f}s")
         except Exception as e:
@@ -366,7 +334,7 @@ def write_routes_to_graph(con, results, facility_maps):
 
     Args:
         con: DuckDB connection (must be read-write)
-        results: nested dict results[region][method] = RegionalTourResult
+        results: nested dict results[region][method] = dict
         facility_maps: dict mapping (region, method) -> {complex: facility_id}
     """
     # Clear previous route data
@@ -378,7 +346,7 @@ def write_routes_to_graph(con, results, facility_maps):
     for region in results:
         for method in results[region]:
             result = results[region][method]
-            tour = result.tour
+            tour = result['tour']
             route_id += 1
             fmap = facility_maps.get((region, method), {})
 
@@ -403,27 +371,21 @@ def write_routes_to_graph(con, results, facility_maps):
           f"to part_of_route table.")
 
 
-def convert_results_for_crewai(results):
-    """Convert RegionalTourResult namedtuples to dicts for CrewAI.
+def serialize_tours(results):
+    """Convert complex City objects in tour dicts to JSON-serializable format.
 
-    Input: results[region][delivery_method] = RegionalTourResult
-    Output: Same nested structure but with JSON-serializable dicts
+    Input: results[region][delivery_method] = dict with 'tour' as list of complex
+    Output: Same structure but with tour as list of {longitude, latitude} dicts
     """
     converted = {}
-    for region, delivery_methods in results.items():
+    for region, methods in results.items():
         converted[region] = {}
-        for dm, result in delivery_methods.items():
-            if isinstance(result, dict):
-                converted[region][dm] = result
-            else:
-                converted[region][dm] = {
-                    'region': result.region,
-                    'tour': [{'longitude': city.real, 'latitude': city.imag}
-                             for city in result.tour],
-                    'length': result.length,
-                    'secs': result.secs,
-                    'num_sites': result.num_sites
-                }
+        for dm, result in methods.items():
+            converted[region][dm] = {
+                **result,
+                'tour': [{'longitude': c.real, 'latitude': c.imag}
+                         for c in result['tour']]
+            }
     return converted
 
 
@@ -436,7 +398,7 @@ def plot_regional_tours(con, results):
 
     Args:
         con: DuckDB connection (for facility count context)
-        results: nested dict results[region][method] = RegionalTourResult
+        results: nested dict results[region][method] = dict
     """
     num_regions = len(results)
     if num_regions == 0:
@@ -471,16 +433,16 @@ def plot_regional_tours(con, results):
             alaska.boundary.plot(ax=ax, color='black', linewidth=0.5, zorder=0)
 
         total_sites = sum(
-            results[region][gn].num_sites
+            results[region][gn]['num_sites']
             for gn in groups if gn in results[region]
         )
         ax.set_title(f"{region}\n{total_sites} sites, {len(groups)} tours")
 
         legend_list = []
         for group_name in sorted(groups.keys()):
-            tour = results[region][group_name].tour
-            num_sites = results[region][group_name].num_sites
-            length = results[region][group_name].length
+            tour = results[region][group_name]['tour']
+            num_sites = results[region][group_name]['num_sites']
+            length = results[region][group_name]['length']
 
             # Color by delivery method
             color_map = {
@@ -1250,7 +1212,7 @@ def main():
     visualize_final_graph(graph_con)
 
     # Convert results for CrewAI
-    tsp_results_dict = convert_results_for_crewai(regional_results)
+    tsp_results_dict = serialize_tours(regional_results)
 
     # Set up agents and tasks
     agents, tasks = setup_agents(llm, tsp_results_dict, input_report)
