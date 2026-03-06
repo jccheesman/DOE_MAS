@@ -12,6 +12,7 @@ Agents:
     - Cost Estimator: Assigns cost values to route segments
     - Operational Risk Agent: Assesses segment risks
     - Route Analyzer: Assesses route quality using cost + risk inputs
+    - TSP Route Adjuster: Fixes flagged routes in the graph database
     - Writing Agent: Synthesizes findings into a report
     - Contrarian Agent: Provides critical review
 
@@ -761,6 +762,89 @@ def get_route_summary() -> str:
 
 
 # ===========================================================================
+# Graph-Write Tools for TSP Adjuster
+# ===========================================================================
+
+@tool("remove_route_segment")
+def remove_route_segment(route_id: int, sequence: int) -> str:
+    """Remove a specific segment from a route by route_id and sequence number.
+
+    Args:
+        route_id: The route ID to modify
+        sequence: The sequence number of the segment to remove
+    """
+    global graph_con
+    graph_con.execute(
+        "DELETE FROM part_of_route WHERE route_id = ? AND sequence = ?",
+        [route_id, sequence]
+    )
+    remaining = graph_con.execute(
+        "SELECT COUNT(*) FROM part_of_route WHERE route_id = ?",
+        [route_id]
+    ).fetchone()[0]
+    return f"Removed segment {sequence} from route {route_id}. {remaining} segments remaining."
+
+
+@tool("insert_route_segment")
+def insert_route_segment(src_facility_id: int, dst_facility_id: int,
+                         route_id: int, sequence: int,
+                         distance_miles: float) -> str:
+    """Insert a new segment into a route.
+
+    Args:
+        src_facility_id: Source facility ID
+        dst_facility_id: Destination facility ID
+        route_id: The route ID to add to
+        sequence: The sequence position for this segment
+        distance_miles: Distance in miles for this segment
+    """
+    global graph_con
+    graph_con.execute(
+        "INSERT INTO part_of_route VALUES (?, ?, ?, ?, ?)",
+        [src_facility_id, dst_facility_id, route_id, sequence, distance_miles]
+    )
+    return (f"Inserted segment: {src_facility_id} -> {dst_facility_id} "
+            f"(route {route_id}, seq {sequence}, {distance_miles:.1f} mi)")
+
+
+@tool("split_route")
+def split_route(route_id: int, split_after_sequence: int) -> str:
+    """Split a route into two separate routes at the given sequence point.
+    Segments with sequence <= split_after_sequence stay in the original route.
+    Segments with sequence > split_after_sequence get a new route_id.
+
+    Args:
+        route_id: The route ID to split
+        split_after_sequence: Split after this sequence number
+    """
+    global graph_con
+    # Find next available route_id
+    max_id = graph_con.execute(
+        "SELECT COALESCE(MAX(route_id), 0) FROM part_of_route"
+    ).fetchone()[0]
+    new_route_id = max_id + 1
+
+    # Update segments after the split point to the new route
+    graph_con.execute("""
+        UPDATE part_of_route
+        SET route_id = ?, sequence = sequence - ? - 1
+        WHERE route_id = ? AND sequence > ?
+    """, [new_route_id, split_after_sequence, route_id, split_after_sequence])
+
+    # Count segments in each route
+    orig_count = graph_con.execute(
+        "SELECT COUNT(*) FROM part_of_route WHERE route_id = ?", [route_id]
+    ).fetchone()[0]
+    new_count = graph_con.execute(
+        "SELECT COUNT(*) FROM part_of_route WHERE route_id = ?", [new_route_id]
+    ).fetchone()[0]
+
+    return (f"Split route {route_id} after sequence {split_after_sequence}. "
+            f"Original route: {orig_count} segments. "
+            f"New route {new_route_id}: {new_count} segments.")
+
+
+# ===========================================================================
 # Agent & Task Setup
 # ===========================================================================
 
@@ -940,7 +1024,56 @@ def setup_agents(llm, tsp_results_dict, input_report):
                        "and risk evaluations plus actionable recommendations."
     )
 
-    # ----- Agent 5: Writing Agent -----
+    # ----- Agent 5: TSP Adjuster -----
+    tsp_adjuster_agent = Agent(
+        role="TSP Route Adjuster",
+        goal="Fix unrealistic or inefficient routes identified by the Route "
+             "Analyzer by modifying route segments in the graph database.",
+        backstory="Expert in route optimization and graph database operations. "
+                  "You take specific recommendations from the Route Analyzer "
+                  "and apply corrections to routes in the graph database. "
+                  "You can remove inefficient segments, insert better "
+                  "connections, and split overly large routes. You must query "
+                  "routes before modifying them to understand the current "
+                  "state, and verify changes after making them. Only modify "
+                  "routes that were flagged as problematic — do not change "
+                  "routes that are working well.",
+        verbose=True,
+        llm=llm,
+        tools=[query_tsp_routes, get_route_summary, query_facility_connections,
+               remove_route_segment, insert_route_segment, split_route]
+    )
+
+    tsp_adjuster_task = Task(
+        description="""Review the Route Analyzer's assessment and fix routes
+        that were flagged as unrealistic, too costly, or ineffective.
+
+        IMPORTANT: Query routes BEFORE modifying them. Verify changes AFTER
+        making them. Only modify routes that were specifically flagged.
+
+        For each flagged route:
+        1. Use query_tsp_routes or get_route_summary to examine the current
+           route state
+        2. Based on the Route Analyzer's recommendation, apply fixes:
+           - For routes that are too long: use split_route to break them
+             into smaller sub-routes
+           - For segments that are inefficient: use remove_route_segment
+             to remove the problematic segment, then insert_route_segment
+             to add a better connection
+           - For routes with geographic issues: restructure segments as
+             needed
+        3. After each modification, use get_route_summary to verify the
+           change improved the route
+
+        Report all changes made and their impact on route distances.""",
+        agent=tsp_adjuster_agent,
+        context=[route_analysis_task],
+        expected_output="A summary of all route modifications made, with "
+                       "before/after distances and verification that changes "
+                       "improved route quality."
+    )
+
+    # ----- Agent 6: Writing Agent -----
     writing_agent = Agent(
         role="Fuel Delivery Analyst and Report Writer",
         goal="Write an engaging report with analysis and actionable "
@@ -954,22 +1087,20 @@ def setup_agents(llm, tsp_results_dict, input_report):
 
     multi_agent_discussion_task = Task(
         description="""Lead a discussion synthesizing findings from the
-        TSP Route Optimizer, Route Analyzer, Cost Estimator, and
-        Operational Risk Agent.
+        TSP Route Optimizer, Route Analyzer, TSP Route Adjuster, Cost
+        Estimator, and Operational Risk Agent.
 
         * TSP Route Optimizer: Route data from the graph database
         * Route Analyzer: Route efficiency, cost-effectiveness, and
           viability assessments with recommendations
+        * TSP Route Adjuster: Route modifications made and their impact
         * Cost Estimator: Cost estimates per segment/route
         * Operational Risk Agent: Risk assessments and alternatives
 
         As moderator:
-        1. Synthesize route data, analysis, cost, and risk findings
+        1. Synthesize route data, analysis, adjustments, cost, and risk
         2. Identify key trade-offs (cost vs. risk vs. efficiency)
-        3. Ask clarifying questions about:
-           - How do cost and risk interact for different delivery methods?
-           - What are the biggest logistical bottlenecks?
-           - Where can route optimization most reduce costs?
+        3. Evaluate whether route adjustments addressed the concerns
         4. Identify the most important findings for the final report""",
         agent=writing_agent,
         expected_output="A structured summary with key points and insights."
@@ -1038,7 +1169,8 @@ def setup_agents(llm, tsp_results_dict, input_report):
     )
 
     agents = [tsp_agent, cost_estimator_agent, operational_risk_agent,
-              route_analyzer_agent, writing_agent, contrarian_agent]
+              route_analyzer_agent, tsp_adjuster_agent, writing_agent,
+              contrarian_agent]
 
     tasks = [
         tsp_task,                      # Phase 1: Route data retrieval (data-grounded)
@@ -1046,11 +1178,12 @@ def setup_agents(llm, tsp_results_dict, input_report):
         operational_risk_task,         # Phase 1: Risk assessment
         operational_cost_discussion,   # Phase 2: Cost-risk discussion
         route_analysis_task,           # Phase 2: Route analysis (uses cost + risk)
-        multi_agent_discussion_task,   # Phase 3: Multi-agent synthesis
-        contrarian_task,               # Phase 4: Contrarian review
-        writing_response_task,         # Phase 4: Writing response
-        contrarian_followup_task,      # Phase 4: Contrarian follow-up
-        writing_task                   # Phase 5: Final report
+        tsp_adjuster_task,             # Phase 3: Fix flagged routes in graph DB
+        multi_agent_discussion_task,   # Phase 4: Multi-agent synthesis
+        contrarian_task,               # Phase 5: Contrarian review
+        writing_response_task,         # Phase 5: Writing response
+        contrarian_followup_task,      # Phase 5: Contrarian follow-up
+        writing_task                   # Phase 6: Final report
     ]
 
     return agents, tasks
