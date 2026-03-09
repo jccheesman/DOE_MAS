@@ -188,6 +188,90 @@ def query_delivery_method_stats() -> str:
     }, indent=2)
 
 
+@tool("query_friction_cost_stats")
+def query_friction_cost_stats() -> str:
+    """Query the graph database for friction-adjusted cost statistics.
+    Returns per-delivery-method friction cost summaries including average
+    friction ratios (how much longer realistic routes are vs straight-line),
+    and per-region breakdowns showing where terrain adds the most cost."""
+    global graph_con
+
+    # Check if friction_costs table exists
+    try:
+        graph_con.execute("SELECT 1 FROM friction_costs LIMIT 1")
+    except Exception:
+        return json.dumps({
+            "status": "no_friction_data",
+            "message": "Friction costs have not been computed yet. "
+                       "Only Haversine distances are available."
+        })
+
+    # Per-method summary
+    method_summary = graph_con.execute("""
+        SELECT
+            delivery_method,
+            COUNT(*) AS num_pairs,
+            ROUND(AVG(haversine_miles), 1) AS avg_haversine_mi,
+            ROUND(AVG(friction_cost), 1) AS avg_friction_cost,
+            ROUND(AVG(friction_ratio), 3) AS avg_friction_ratio,
+            ROUND(MIN(friction_ratio), 3) AS min_friction_ratio,
+            ROUND(MAX(friction_ratio), 3) AS max_friction_ratio
+        FROM friction_costs
+        GROUP BY delivery_method
+        ORDER BY avg_friction_ratio DESC
+    """).fetchdf()
+
+    # Per-region per-method breakdown
+    region_breakdown = graph_con.execute("""
+        SELECT
+            li.region_name,
+            fc.delivery_method,
+            COUNT(*) AS num_pairs,
+            ROUND(AVG(fc.friction_ratio), 3) AS avg_friction_ratio,
+            ROUND(MAX(fc.friction_ratio), 3) AS max_friction_ratio,
+            ROUND(AVG(fc.haversine_miles), 1) AS avg_haversine_mi,
+            ROUND(AVG(fc.friction_cost), 1) AS avg_friction_cost
+        FROM friction_costs fc
+        JOIN located_in li ON fc.src = li.facility_id
+        GROUP BY li.region_name, fc.delivery_method
+        ORDER BY avg_friction_ratio DESC
+    """).fetchdf()
+
+    # Highest friction pairs (terrain bottlenecks)
+    top_friction_pairs = graph_con.execute("""
+        SELECT
+            fc.src, fc.dst, fc.delivery_method,
+            f1.community_name AS src_community,
+            f2.community_name AS dst_community,
+            li.region_name,
+            ROUND(fc.haversine_miles, 1) AS haversine_mi,
+            ROUND(fc.friction_cost, 1) AS friction_cost,
+            ROUND(fc.friction_ratio, 3) AS friction_ratio
+        FROM friction_costs fc
+        JOIN facilities f1 ON fc.src = f1.facility_id
+        JOIN facilities f2 ON fc.dst = f2.facility_id
+        JOIN located_in li ON fc.src = li.facility_id
+        ORDER BY fc.friction_ratio DESC
+        LIMIT 15
+    """).fetchdf()
+
+    # Connects_to edges with friction vs haversine comparison
+    friction_coverage = graph_con.execute("""
+        SELECT
+            COUNT(*) AS total_edges,
+            COUNT(friction_cost) AS edges_with_friction,
+            ROUND(100.0 * COUNT(friction_cost) / COUNT(*), 1) AS coverage_pct
+        FROM connects_to
+    """).fetchdf()
+
+    return json.dumps({
+        "method_summary": json.loads(method_summary.to_json(orient='records')),
+        "region_breakdown": json.loads(region_breakdown.to_json(orient='records')),
+        "highest_friction_pairs": json.loads(top_friction_pairs.to_json(orient='records')),
+        "friction_coverage": json.loads(friction_coverage.to_json(orient='records'))
+    }, indent=2)
+
+
 # ===========================================================================
 # Report Save Tool
 # ===========================================================================
@@ -324,7 +408,7 @@ def setup_agents(llm):
         verbose=True,
         llm=llm,
         tools=[query_graph_facilities, query_graph_regions,
-               query_delivery_method_stats]
+               query_delivery_method_stats, query_friction_cost_stats]
     )
 
     delivery_method_task = Task(
@@ -354,6 +438,19 @@ def setup_agents(llm):
            - Where do mixed methods (e.g., 'Plane or Road') indicate
              infrastructure flexibility?
            - How do adjacency distances relate to delivery method choices?
+        6. Use query_friction_cost_stats to analyze terrain-adjusted costs:
+           - How do friction ratios differ by delivery method? (Road routes
+             are typically 1.5-3x longer than straight-line due to terrain
+             and road networks; Barge may be shorter via water; Plane is
+             near straight-line)
+           - Which regions have the highest friction ratios? This indicates
+             where terrain, lack of roads, or permafrost add the most cost.
+           - Identify the highest-friction facility pairs — these are the
+             most expensive/difficult connections in the network.
+           - How does friction coverage compare to total edges? Are there
+             gaps where friction costs haven't been computed?
+           - Compare Haversine distances vs friction-adjusted costs to
+             quantify how much real-world terrain adds to delivery costs.
 
         Present your analysis grounded in graph-derived data, using
         domain expertise only to interpret patterns found in the data.""",
