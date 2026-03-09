@@ -82,6 +82,7 @@ df -h "$MOUNT_POINT"
 # =========================================================
 info "Creating Ollama data directory on volume..."
 mkdir -p "$OLLAMA_DATA_DIR"
+chown -R ollama:ollama "${MOUNT_POINT}/ollama"
 
 # =========================================================
 # Step 3: Install Ollama
