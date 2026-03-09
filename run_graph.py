@@ -10,12 +10,15 @@ This replaces run.py and calls the new graph-integrated modules:
 All modules share the same DuckDB database file (regionalization.duckdb).
 """
 
+import os
 import regionalization_graph
 import market_cost_analysis
 import tsp_model_graph
 import pipeline
 
 if __name__ == "__main__":
+    os.makedirs("outputs", exist_ok=True)
+
     # Step 1: Regionalization - creates the graph database
     print("=" * 60)
     print("STEP 1: Regionalization (Graph Database Creation)")

@@ -736,7 +736,8 @@ def plot_by_regions(reg_dict, unassigned_dict):
     ax.legend(loc='center left', bbox_to_anchor=(1, 0.5))
 
     plt.tight_layout()
-    plt.show()
+    plt.savefig("outputs/regions.png", dpi=150, bbox_inches="tight")
+    plt.close()
 
 
 def group_by_delivery_method(regional_dict):

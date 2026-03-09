@@ -479,7 +479,8 @@ def plot_regional_tours(con, results):
         axes[idx].axis('off')
 
     plt.tight_layout()
-    plt.show()
+    plt.savefig("outputs/regional_tours.png", dpi=150, bbox_inches="tight")
+    plt.close()
 
 
 def visualize_final_graph(con):
@@ -602,7 +603,8 @@ def visualize_final_graph(con):
     ax.set_ylabel('Latitude')
     ax.set_title('Final Graph State: TSP Routes Overlaid on Facility Network')
     plt.tight_layout()
-    plt.show()
+    plt.savefig("outputs/final_graph.png", dpi=150, bbox_inches="tight")
+    plt.close()
 
     # Print summary statistics
     route_stats = con.execute("""
