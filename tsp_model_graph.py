@@ -58,6 +58,7 @@ pipeline.set_cwd('/media/volume/Preliminary_mas_runs')
 # Globals
 # ---------------------------------------------------------------------------
 graph_con = None
+_friction_cache = {}  # {(City_A, City_B): friction_cost}
 
 # ===========================================================================
 # Type Aliases (unchanged from original)
@@ -74,11 +75,20 @@ Segment = list
 # ===========================================================================
 
 def distance(A: City, B: City) -> float:
-    """Distance between two cities in miles using the Haversine formula.
+    """Distance between two cities using friction cost if available,
+    falling back to Haversine formula.
 
-    Source: https://community.esri.com/t5/coordinate-reference-systems-blog/
-    distance-on-a-sphere-the-haversine-formula/ba-p/902128
+    When friction costs have been precomputed, returns the friction-adjusted
+    cost which accounts for terrain, road networks, and delivery method.
+    Otherwise falls back to straight-line Haversine distance in miles.
     """
+    # Check friction cache first (try both directions)
+    if _friction_cache:
+        cost = _friction_cache.get((A, B)) or _friction_cache.get((B, A))
+        if cost is not None:
+            return cost
+
+    # Fall back to Haversine
     lon1, lat1 = A.real, A.imag
     lon2, lat2 = B.real, B.imag
 
@@ -235,6 +245,47 @@ def plot_segment(segment: Segment, style='bo:', color=None):
                  markersize=4, clip_on=False)
     plt.axis('scaled')
     plt.axis('off')
+
+
+# ===========================================================================
+# Friction Cache
+# ===========================================================================
+
+def load_friction_cache(con, facility_maps):
+    """Load friction costs from connects_to into a cache keyed by City pairs.
+
+    Populates the global _friction_cache dict so the distance() function
+    can use friction-adjusted costs instead of Haversine.
+
+    Args:
+        con: DuckDB connection
+        facility_maps: dict mapping (region, method) -> {complex_city: facility_id}
+    """
+    global _friction_cache
+    _friction_cache = {}
+
+    # Build reverse map: facility_id -> City (complex)
+    id_to_city = {}
+    for fmap in facility_maps.values():
+        for city, fid in fmap.items():
+            id_to_city[fid] = city
+
+    # Load friction costs from connects_to
+    rows = con.execute(
+        "SELECT src, dst, friction_cost FROM connects_to "
+        "WHERE friction_cost IS NOT NULL"
+    ).fetchall()
+
+    loaded = 0
+    for src_id, dst_id, fcost in rows:
+        city_a = id_to_city.get(src_id)
+        city_b = id_to_city.get(dst_id)
+        if city_a is not None and city_b is not None:
+            _friction_cache[(city_a, city_b)] = fcost
+            loaded += 1
+
+    print(f"Loaded {loaded} friction costs into distance cache "
+          f"({len(id_to_city)} facilities mapped)")
 
 
 # ===========================================================================
@@ -1186,6 +1237,12 @@ def main():
             f"SELECT COUNT(*) FROM {table}"
         ).fetchone()[0]
         print(f"  {table}: {count} rows")
+
+    # Load friction costs into distance cache (if available)
+    print("\nLoading friction costs...")
+    # We need facility_maps first, so get_regional_cities here
+    _, pre_facility_maps = get_regional_cities(graph_con)
+    load_friction_cache(graph_con, pre_facility_maps)
 
     # Run regional TSP
     print("\nRunning TSP for each region/delivery method group...")

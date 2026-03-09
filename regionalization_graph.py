@@ -201,6 +201,7 @@ def init_duckdb_graph():
             src INTEGER REFERENCES facilities(facility_id),
             dst INTEGER REFERENCES facilities(facility_id),
             distance_miles DOUBLE,
+            friction_cost DOUBLE,
             PRIMARY KEY (src, dst)
         )
     """)
