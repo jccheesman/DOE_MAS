@@ -81,9 +81,20 @@ This script will:
 
 ### 10. Run the Project
 
+**Important**: Always run inside `tmux` so the pipeline survives if your Guacamole session disconnects:
+
 ```bash
+# Start a named tmux session
+tmux new -s pipeline
+
+# Run the pipeline
 python run_graph.py
+
+# To detach (process keeps running): press Ctrl+B, then D
+# To reattach later:  tmux attach -t pipeline
 ```
+
+If the pipeline crashes mid-run, just re-run `python run_graph.py` — it will skip completed steps automatically (checkpoint stored in `outputs/.checkpoint`). To force a full re-run, delete that file first.
 
 ---
 
@@ -118,6 +129,8 @@ curl http://localhost:11434/api/tags
 ### 4. Run the Project
 
 ```bash
+# Always use tmux so disconnects don't kill the pipeline
+tmux new -s pipeline
 python run_graph.py
 ```
 
@@ -140,6 +153,8 @@ python run_graph.py
 
 ## D. Troubleshooting
 
+- **LiteLLM timeout error**: The pipeline uses a 30-minute timeout per LLM request. If you still hit timeouts, increase `timeout` in `pipeline.py:get_llm()`
+- **Pipeline crashed mid-run**: Just re-run `python run_graph.py` — it resumes from the last completed step. Delete `outputs/.checkpoint` to force a fresh start
 - **Ollama not responding**: `sudo systemctl restart ollama` then check `journalctl -u ollama -f`
 - **Disk full on root**: Models should be on the volume — check with `df -h`
 - **Volume not mounted after reboot**: `sudo mount -a` (fstab entry is set by setup_ollama.sh)

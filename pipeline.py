@@ -50,7 +50,12 @@ def get_llm():
 	model = f"ollama/{model_name}" if not model_name.startswith("ollama/") else model_name
 
 	print(f"LLM configured: {model} at {api_base}")
-	return LLM(model=model, base_url=api_base)
+	return LLM(
+		model=model,
+		base_url=api_base,
+		timeout=1800,       # 30 min — 70B model can be slow on complex prompts
+		num_retries=3,      # retry on transient connection errors
+	)
 
 
 def save_json(source_folder=".", output_folder_name="outputs", pattern="*.json"):

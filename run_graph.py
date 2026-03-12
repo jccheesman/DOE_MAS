@@ -11,10 +11,35 @@ All modules share the same DuckDB database file (regionalization.duckdb).
 """
 
 import os
+import json
+from pathlib import Path
 import regionalization_graph
 import market_cost_analysis
 import tsp_model_graph
 import pipeline
+
+CHECKPOINT_FILE = "outputs/.checkpoint"
+
+
+def load_checkpoint():
+    if Path(CHECKPOINT_FILE).exists():
+        return json.loads(Path(CHECKPOINT_FILE).read_text())
+    return {"completed_steps": []}
+
+
+def save_checkpoint(step):
+    cp = load_checkpoint()
+    if step not in cp["completed_steps"]:
+        cp["completed_steps"].append(step)
+    Path(CHECKPOINT_FILE).write_text(json.dumps(cp))
+    print(f"  Checkpoint saved: {step}")
+
+
+def should_run(step):
+    if step in load_checkpoint()["completed_steps"]:
+        print(f"  Skipping {step} (already complete)")
+        return False
+    return True
 
 if __name__ == "__main__":
     os.makedirs("outputs", exist_ok=True)
@@ -23,19 +48,25 @@ if __name__ == "__main__":
     print("=" * 60)
     print("STEP 1: Regionalization (Graph Database Creation)")
     print("=" * 60)
-    regionalization_graph.main()
+    if should_run("regionalization"):
+        regionalization_graph.main()
+        save_checkpoint("regionalization")
 
     # Step 2: Market & Cost Analysis - reads graph DB (read-only)
     print("\n" + "=" * 60)
     print("STEP 2: Market & Cost Analysis")
     print("=" * 60)
-    market_cost_analysis.main()
+    if should_run("market_cost_analysis"):
+        market_cost_analysis.main()
+        save_checkpoint("market_cost_analysis")
 
     # Step 3: TSP Route Optimization - reads & writes to graph DB
     print("\n" + "=" * 60)
     print("STEP 3: TSP Route Optimization")
     print("=" * 60)
-    tsp_model_graph.main()
+    if should_run("tsp_optimization"):
+        tsp_model_graph.main()
+        save_checkpoint("tsp_optimization")
 
     # Step 4: Copy JSON outputs to outputs folder
     print("\n" + "=" * 60)

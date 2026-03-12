@@ -123,6 +123,8 @@ cat > /etc/systemd/system/ollama.service.d/override.conf <<EOF
 [Service]
 Environment="OLLAMA_MODELS=${OLLAMA_DATA_DIR}"
 Environment="OLLAMA_HOST=0.0.0.0:11434"
+Environment="OLLAMA_KEEP_ALIVE=120m"
+Environment="OLLAMA_NUM_PARALLEL=1"
 EOF
 
 systemctl daemon-reload
