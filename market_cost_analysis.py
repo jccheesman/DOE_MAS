@@ -217,6 +217,27 @@ def setup_agents(llm):
     Returns:
         Tuple of (agents_list, tasks_list)
     """
+    from datetime import date
+    global graph_con
+
+    # Query graph DB for regional context to give non-tool agents
+    region_summary = graph_con.execute("""
+        SELECT li.region_name,
+               COUNT(DISTINCT li.facility_id) AS facility_count,
+               STRING_AGG(DISTINCT COALESCE(um.method_name, 'Unassigned'), ', ') AS methods
+        FROM located_in li
+        LEFT JOIN uses_method um ON li.facility_id = um.facility_id
+        GROUP BY li.region_name
+        ORDER BY facility_count DESC
+    """).fetchdf()
+
+    region_context = "Alaska Energy Regions in the dataset:\n"
+    for _, row in region_summary.iterrows():
+        region_context += (f"- {row['region_name']}: {row['facility_count']} facilities, "
+                          f"methods: {row['methods']}\n")
+
+    all_region_names = ", ".join(region_summary['region_name'].tolist())
+    today_str = date.today().isoformat()
 
     # ----- Agent 1: Market Dynamics Analyst -----
     market_dynamics_analyst = Agent(
@@ -235,29 +256,46 @@ def setup_agents(llm):
     )
 
     market_dynamics_task = Task(
-        description="""Analyze market trends regarding fuel in Alaska:
+        description=f"""You are analyzing fuel delivery for these specific Alaska regions:
 
-        1. Research current fuel prices in Alaska, including regional variations
-           (e.g., urban vs. rural, road-accessible vs. remote communities)
+{region_context}
+
+Analyze market trends regarding fuel in Alaska, with specific attention to
+regional differences between these regions:
+
+        1. Research current fuel prices in Alaska, including regional variations.
+           Reference SPECIFIC regions from the list above (e.g., compare prices
+           in road-accessible regions like Railbelt vs. remote regions like
+           North Slope or Yukon-Kuskokwim Delta)
         2. Analyze demand patterns: seasonal fluctuations, population-driven
-           demand, industrial/commercial vs. residential consumption
+           demand, industrial/commercial vs. residential consumption.
+           Discuss how demand differs across the regions listed above.
         3. Assess transportation rates for different delivery methods (barge,
-           plane, road transport) and how they affect final fuel costs
+           plane, road transport) and how they affect final fuel costs.
+           Note which regions rely on which methods per the data above.
         4. Identify key market drivers: oil price volatility, regulatory
            changes, infrastructure investments, climate change impacts on
            delivery windows
         5. Discuss how market forces create incentives or barriers for
-           different delivery methods
+           different delivery methods in different regions
 
         Present your findings in a clear narrative style with specific data
-        points and examples where possible.
-
-        Focus on market-wide economics and macro trends. Leave facility-
-        specific and graph-database analysis to the Delivery Method Analyst.""",
+        points and examples. Reference the specific regions listed above
+        throughout your analysis.""",
         agent=market_dynamics_analyst,
-        expected_output="A comprehensive market dynamics analysis covering "
-                       "fuel prices, demand patterns, transportation rates, "
-                       "and key market drivers in Alaska."
+        expected_output=f"""A detailed market dynamics analysis (minimum 800 words) covering
+these regions: {all_region_names}. Must include:
+
+1. **Current Fuel Prices** (3+ paragraphs): Regional price variations with specific dollar
+   figures. Compare prices across at least 3 regions from the dataset.
+2. **Demand Patterns** (2+ paragraphs): Seasonal fluctuations and how demand differs
+   across regions, with specific regional references.
+3. **Transportation Rate Analysis** (3+ paragraphs): Cost per gallon added by each delivery
+   method (barge, plane, road). Reference which regions use which methods.
+4. **Key Market Drivers** (2+ paragraphs): Oil price volatility, regulatory changes,
+   infrastructure investments, climate impacts.
+5. **Market Forces & Delivery Incentives** (1+ paragraph): How economics favor or
+   discourage specific delivery methods in different regions."""
     )
 
     # ----- Agent 2: Economic & Environmental Factors Agent -----
@@ -280,29 +318,44 @@ def setup_agents(llm):
     )
 
     economic_environmental_task = Task(
-        description="""Research seasonality and infrastructure in Alaska in
-        relation to fuel delivery:
+        description=f"""You are analyzing fuel delivery for these specific Alaska regions:
 
-        1. Analyze seasonal delivery windows: when can barges reach coastal
-           communities? When are ice roads operational? When are airstrips
-           accessible year-round vs. seasonally?
-        2. Assess infrastructure status: road network coverage, port
-           facilities, airstrip conditions, fuel storage capacity at
-           remote communities
-        3. Research environmental factors: permafrost impacts on
-           infrastructure, river ice conditions, coastal erosion affecting
-           ports, weather-related delivery disruptions
+{region_context}
+
+Research seasonality and infrastructure in Alaska in relation to fuel delivery,
+with specific attention to how conditions vary across the regions listed above:
+
+        1. Analyze seasonal delivery windows by region: when can barges reach
+           coastal communities? Which regions have ice roads? Which airstrips
+           are year-round vs. seasonal? Reference specific regions from the list.
+        2. Assess infrastructure status per region: road network coverage, port
+           facilities, airstrip conditions, fuel storage capacity.
+           Note which regions have infrastructure advantages vs. limitations.
+        3. Research environmental factors by region: permafrost impacts,
+           river ice conditions, coastal erosion, weather disruptions.
+           Which regions face the most severe environmental challenges?
         4. Evaluate economic factors: cost of maintaining infrastructure in
            Arctic conditions, community size vs. delivery economics,
-           government subsidies and programs (e.g., Power Cost Equalization)
-        5. Discuss how climate change is altering traditional delivery
-           patterns and creating both risks and opportunities
+           government subsidies (e.g., Power Cost Equalization).
+           Which regions benefit most from subsidies?
+        5. Discuss how climate change is altering delivery patterns across
+           regions, creating both risks and opportunities
 
-        Present your findings in a narrative style with real examples.""",
+        Reference the specific regions listed above throughout your analysis.""",
         agent=economic_environmental_agent,
-        expected_output="A comprehensive analysis of seasonal, environmental, "
-                       "and infrastructure factors affecting fuel delivery "
-                       "in Alaska."
+        expected_output=f"""A detailed analysis (minimum 800 words) of seasonal, environmental,
+and infrastructure factors for these regions: {all_region_names}. Must include:
+
+1. **Seasonal Delivery Windows** (3+ paragraphs): Per-region analysis of when each delivery
+   method is viable. Reference at least 3 specific regions.
+2. **Infrastructure Assessment** (2+ paragraphs): Regional infrastructure strengths and
+   weaknesses with specific examples.
+3. **Environmental Factors** (2+ paragraphs): Per-region environmental challenges with
+   concrete examples of how they affect delivery.
+4. **Economic Factors** (2+ paragraphs): Cost of infrastructure maintenance, subsidies,
+   community economics with regional comparisons.
+5. **Climate Change Impacts** (1+ paragraph): How changing conditions affect delivery
+   patterns differently across regions."""
     )
 
     # ----- Agent 3: Delivery Method Analyst (with graph DB tools) -----
@@ -358,10 +411,20 @@ def setup_agents(llm):
         Present your analysis grounded in graph-derived data, using
         domain expertise only to interpret patterns found in the data.""",
         agent=delivery_method_analyst,
-        expected_output="A comprehensive delivery method analysis combining "
-                       "graph database insights with research on costs, "
-                       "infrastructure, and operational status of each "
-                       "delivery method in Alaska."
+        expected_output=f"""A detailed delivery method analysis (minimum 800 words) grounded
+in graph database data. Must include:
+
+1. **Regional Overview** (per region): For EACH region ({all_region_names}), provide:
+   - Number of facilities (from query_graph_regions)
+   - Dominant delivery method(s) and counts
+   - Distance statistics from the graph
+2. **Delivery Method Breakdown**: For each method (Road, Barge, Plane), summarize:
+   - Total facilities using it and which regions
+   - Distance patterns (avg, min, max) from graph data
+   - Regional concentration or spread
+3. **Pattern Analysis**: Which regions depend on a single method? Where do mixed
+   methods indicate flexibility? How do adjacency distances relate to method choices?
+4. **Data Quality Notes**: Any regions with missing or unusual data."""
     )
 
     # ----- Agent 4: Writing Agent -----
@@ -440,10 +503,12 @@ def setup_agents(llm):
 
         The goal is to produce actionable insights for the final report.""",
         agent=writing_agent,
-        expected_output="A structured summary of the multi-agent discussion "
-                       "highlighting key points, cross-cutting insights, "
-                       "specific examples, and actionable findings from each "
-                       "agent that should be included in the final report."
+        expected_output=f"""A structured discussion summary (minimum 500 words) with:
+1. **Key Themes** (3+ items): Cross-cutting insights across all three analyses
+2. **Regional Highlights**: Notable findings for specific regions ({all_region_names})
+3. **Areas of Agreement**: Where agents' analyses reinforce each other
+4. **Potential Conflicts**: Where analyses disagree or present contradictions
+5. **Actionable Findings**: Specific recommendations emerging from the discussion"""
     )
 
     # ----- Phase 3: Contrarian Review & Dialogue -----
@@ -467,9 +532,12 @@ def setup_agents(llm):
         Present your findings in a structured format with specific
         citations to the analyses you are critiquing.""",
         agent=contrarian_agent,
-        expected_output="A structured critical review identifying logical "
-                       "inconsistencies, oversights, alternative perspectives, "
-                       "and specific areas for improvement."
+        expected_output="""A structured critical review (minimum 400 words) with:
+1. **Logical Inconsistencies**: Specific contradictions found, with citations
+2. **Oversights**: Missing considerations or regions not adequately covered
+3. **Alternative Perspectives**: Different interpretations of the same data
+4. **Impractical Assumptions**: Recommendations that may not work in practice
+5. **Specific Improvements**: Concrete suggestions for strengthening the analysis"""
     )
 
     writing_response_task = Task(
@@ -497,55 +565,61 @@ def setup_agents(llm):
 
     # ----- Phase 4: Final Report -----
     final_report_task = Task(
-        description="""Produce a comprehensive final report integrating all
+        description=f"""Produce a comprehensive final report integrating all
         agent analyses, the multi-agent discussion, and the contrarian review.
 
-        The report should be a single JSON document with the following
-        structure. Use the save_report tool to save it:
+        IMPORTANT: This report must cover ALL of these regions with specific
+        analysis for each: {all_region_names}
 
-        {
+        The report should be a single JSON document with the following
+        structure. Use the save_report tool to save it.
+
+        CRITICAL: Each text field below must contain at least 2-3 substantive
+        paragraphs with region-specific references. Do NOT use placeholder text.
+
+        {{
         "title": "Alaska Fuel Delivery Market & Cost Analysis",
-        "executive_summary": "2-3 paragraphs summarizing key findings",
-        "main_report": {
-            "introduction": "Overview of Alaska fuel delivery landscape",
-            "market_dynamics": "Current market trends, prices, demand drivers",
-            "economic_environmental_factors": "Seasonality, infrastructure, climate",
-            "delivery_methods_analysis": "Cost, status, and patterns of each method",
-            "graph_database_insights": "Key findings from the facility graph data",
-            "challenges": "Primary challenges facing fuel delivery in Alaska",
-            "opportunities": "Key opportunities for improvement",
-            "conclusion": "Synthesis of all findings"
-        },
-        "recommendations": {
+        "executive_summary": "2-3 paragraphs summarizing key findings across all regions",
+        "main_report": {{
+            "introduction": "Overview of Alaska fuel delivery landscape across all regions",
+            "market_dynamics": "Current market trends, prices, demand drivers with per-region analysis",
+            "economic_environmental_factors": "Seasonality, infrastructure, climate per region",
+            "delivery_methods_analysis": "Cost, status, and patterns of each method per region",
+            "graph_database_insights": "Key findings from the facility graph data per region",
+            "challenges": "Primary challenges facing fuel delivery per region",
+            "opportunities": "Key opportunities for improvement per region",
+            "conclusion": "Synthesis of all findings across all regions"
+        }},
+        "recommendations": {{
             "strategic_priorities": [
-                {"priority": "Name", "description": "Details",
+                {{"priority": "Name", "description": "Details",
                  "implementation_steps": ["Step 1", "Step 2"],
                  "expected_impact": "Outcome",
-                 "supporting_evidence": "Reference to findings"}
+                 "supporting_evidence": "Reference to findings"}}
             ],
             "operational_improvements": [
-                {"improvement": "Name", "description": "Details",
+                {{"improvement": "Name", "description": "Details",
                  "implementation_steps": ["Step 1", "Step 2"],
-                 "expected_impact": "Outcome"}
+                 "expected_impact": "Outcome"}}
             ]
-        },
-        "agent_discussion_summary": {
+        }},
+        "agent_discussion_summary": {{
             "overview": "How the multi-agent discussion shaped the analysis",
             "market_dynamics_insights": ["Key insight 1", "Key insight 2"],
             "economic_environmental_insights": ["Key insight 1"],
             "delivery_method_insights": ["Key insight 1"],
             "synthesis_insights": ["Cross-functional considerations"],
             "impact_on_recommendations": "How discussion influenced recommendations"
-        },
-        "limitations": {
+        }},
+        "limitations": {{
             "contrarian_critique_initial": "Summary of initial critique",
             "response_to_critique": "How concerns were addressed",
             "follow_up_points": ["Point 1", "Point 2"],
             "acknowledged_limitations": ["Limitation 1"],
             "areas_for_further_research": ["Research area 1"]
-        },
-        "metadata": {
-            "date_generated": "YYYY-MM-DD",
+        }},
+        "metadata": {{
+            "date_generated": "{today_str}",
             "agents_involved": ["Market Dynamics Analyst",
                 "Economic & Environmental Analyst",
                 "Delivery Method Analyst", "Writing Agent",
@@ -553,11 +627,16 @@ def setup_agents(llm):
             "data_sources": ["regionalization.duckdb graph database",
                 "Agent domain knowledge"],
             "confidence_level": "High/Medium/Low"
-        }
-        }""",
+        }}
+        }}""",
         agent=writing_agent,
-        expected_output="A comprehensive JSON report saved to "
-                       "market_cost_analysis_report.json via the save_report tool."
+        expected_output=f"""A comprehensive JSON report saved via save_report tool that:
+- Covers ALL regions: {all_region_names}
+- Has at least 2-3 substantive paragraphs per main_report section
+- Includes region-specific analysis throughout (not generic Alaska-wide statements)
+- Contains at least 3 strategic priorities and 3 operational improvements
+- Uses the date {today_str} in metadata
+- Is valid JSON that can be parsed"""
     )
 
     agents = [market_dynamics_analyst, economic_environmental_agent,

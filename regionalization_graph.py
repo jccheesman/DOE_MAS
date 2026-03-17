@@ -755,7 +755,7 @@ def group_by_delivery_method(regional_dict):
         for facility_id, data in sites.items():
             delivery_method = data.get('Delivery_method')
             if delivery_method is None:
-                continue
+                delivery_method = "Unassigned"
             if region not in temp_dict:
                 temp_dict[region] = {}
             if delivery_method not in temp_dict[region]:
@@ -775,24 +775,37 @@ def group_by_delivery_method(regional_dict):
 # ---------------------------------------------------------------------------
 
 @tool("add_new_delivery_methods")
-def add_new_delivery_methods():
-    """Function to add delivery methods to the regionalized dictionary"""
+def add_new_delivery_methods(facility_id: int, delivery_method: str, region: str) -> str:
+    """Assign or update a delivery method for a facility in the regionalized dictionary.
+
+    Args:
+        facility_id: The facility ID to update
+        delivery_method: The delivery method to assign (Road, Barge, or Plane)
+        region: The region the facility belongs to
+    """
     global final_regionalized_dict
-    for region in final_regionalized_dict.items():
-        for methods in region.items():
-            for facilities in methods.items():
-                if facility_id in facilities:
-                    if delivery_method == methods:
-                        print("Already has correct delivery method.")
-                        continue
-                    else:
-                        facilities.remove(facility_id)
-                        print(f"  Removed {facility_id} from {methods} in {region}")
-                        if delivery_method not in final_regionalized_dict[region]:
-                            final_regionalized_dict[region][delivery_method] = []
-                        final_regionalized_dict[region][delivery_method].append(facility_id)
-                        print(f"Added {facility_id} to {delivery_method} in {region}")
-    return final_regionalized_dict
+
+    if region not in final_regionalized_dict:
+        return f"Error: Region '{region}' not found in dictionary."
+
+    # Remove facility from its current delivery method group in this region
+    facility_data = None
+    for method_key, facilities in list(final_regionalized_dict[region].items()):
+        if facility_id in facilities:
+            facility_data = facilities.pop(facility_id)
+            if not facilities:
+                del final_regionalized_dict[region][method_key]
+            break
+
+    if facility_data is None:
+        return f"Error: Facility {facility_id} not found in region '{region}'."
+
+    # Add facility under the new delivery method
+    if delivery_method not in final_regionalized_dict[region]:
+        final_regionalized_dict[region][delivery_method] = {}
+    final_regionalized_dict[region][delivery_method][facility_id] = facility_data
+
+    return f"Assigned facility {facility_id} to '{delivery_method}' in region '{region}'."
 
 
 @tool("get_facility_dictionary")
@@ -864,27 +877,33 @@ delivery_task = Task(
     Do not infer or assume delivery methods beyond what is present in the data.
     Only assign delivery methods that already exist in the dataset (Road, Barge, Plane).
 
+    The dictionary is organized as: region → delivery_method → facility_id → coordinates.
+    Facilities that have NO delivery method are listed under the "Unassigned" key within
+    their region. You MUST process every "Unassigned" facility.
+
     Complete the following tasks:
-    1. Analyze the dictionary to ensure each site has a delivery method specified.
-        a. If sites do not have a specified delivery method:
+    1. For each region, check for facilities under the "Unassigned" key:
+        a. For each unassigned facility:
           - Examine delivery methods used by other facilities in the same region
           - Assign the most common delivery method from that region
           - If the region has mixed methods, assign based on geographic proximity patterns
-          - With the facility ID and delivery method, add to the dictionary using add_new_delivery_methods tool.
-        b. If sites have multiple delivery methods (e.g., 'Plane or Barge', 'Plane or Road'):
-          - Resolve to a single delivery method using cost-risk analysis.
-          - Consider these cost factors per mile: Road ~$2-5, Barge ~$1-3, Plane ~$8-15.
-          - Consider these risk factors: weather/ice impact on barges, road conditions for trucks, visibility for planes.
-          - Consider the site's geographic context (coastal sites may favor barge, inland sites may favor road).
-          - Assign the single most cost-effective and lowest-risk method.
-          - Update the site using the add_new_delivery_methods tool with the chosen single method.
-  2. Once complete, return the dictionary in the same format as the input dictionary using the update_facility_dictionary tool""",
+          - Call add_new_delivery_methods(facility_id=<id>, delivery_method=<method>, region=<region>)
+            for EACH unassigned facility individually
+    2. For facilities with multiple delivery methods (e.g., 'Plane or Barge', 'Plane or Road'):
+        a. Resolve to a single delivery method using cost-risk analysis:
+          - Cost factors per mile: Road ~$2-5, Barge ~$1-3, Plane ~$8-15
+          - Risk factors: weather/ice impact on barges, road conditions for trucks, visibility for planes
+          - Geographic context: coastal sites may favor barge, inland sites may favor road
+        b. Call add_new_delivery_methods(facility_id=<id>, delivery_method=<chosen_method>, region=<region>)
+           for each resolved facility
+    3. Once complete, return the dictionary using the update_facility_dictionary tool""",
     agent=delivery_method_agent,
     expected_output=
-    '''In JSON format:
-    - The complete modified dictionary with all delivery methods assigned
-    - Summary of each newly added delivery method (if no delivery method was present).
-    - Summary of each resolved multi-method site, showing the original methods and the single method chosen with brief reasoning.''',
+    """In JSON format, provide:
+    1. The complete modified dictionary with ALL delivery methods assigned (no "Unassigned" remaining)
+    2. A table of each newly assigned facility showing: facility_id, region, assigned method, reasoning
+    3. A table of each resolved multi-method facility showing: facility_id, original methods, chosen method, reasoning
+    4. Summary counts: total facilities processed, unassigned resolved, multi-method resolved""",
     verbose=True
 )
 
@@ -904,8 +923,8 @@ logistics_agent = Agent(
 )
 
 logistics_task = Task(
-    description=f"""
-    Review the updated dictionary provided in the previous task:{final_regionalized_dict}
+    description="""
+    Review the updated facility dictionary: {final_regionalized_dict}
 
     IMPORTANT: Ground your assessment in the actual data provided. Reference specific facility
     counts, coordinates, and delivery methods from the dictionary. Do not assume or fabricate
@@ -967,6 +986,47 @@ logistics_task = Task(
 )
 
 
+def sync_delivery_methods_to_db(con):
+    """Sync final_regionalized_dict delivery methods back to DuckDB uses_method table."""
+    global final_regionalized_dict
+    synced = 0
+    for region, methods in final_regionalized_dict.items():
+        for method_name, facilities in methods.items():
+            if method_name == "Unassigned":
+                continue
+            for facility_id in facilities:
+                fid = int(facility_id)
+                # Ensure delivery_methods node exists
+                existing_method = con.execute(
+                    "SELECT 1 FROM delivery_methods WHERE method_name = ?",
+                    [method_name]
+                ).fetchone()
+                if not existing_method:
+                    con.execute(
+                        "INSERT INTO delivery_methods VALUES (?)",
+                        [method_name]
+                    )
+                # Upsert into uses_method
+                existing = con.execute(
+                    "SELECT method_name FROM uses_method WHERE facility_id = ?",
+                    [fid]
+                ).fetchone()
+                if existing:
+                    if existing[0] != method_name:
+                        con.execute(
+                            "UPDATE uses_method SET method_name = ? WHERE facility_id = ?",
+                            [method_name, fid]
+                        )
+                        synced += 1
+                else:
+                    con.execute(
+                        "INSERT INTO uses_method VALUES (?, ?)",
+                        [fid, method_name]
+                    )
+                    synced += 1
+    print(f"Synced delivery methods to DuckDB: {synced} facilities updated.")
+
+
 # ---------------------------------------------------------------------------
 # Main Execution
 # ---------------------------------------------------------------------------
@@ -1022,6 +1082,9 @@ def run_regionalization(bulk_fuel_csv_path, shapefile_path, region_column=None):
     print("CREW EXECUTION COMPLETE")
     print("=" * 50)
     print(result)
+
+    # Step 7b: Sync agent-assigned delivery methods back to DuckDB
+    sync_delivery_methods_to_db(duckdb_con)
 
     # Step 8: Build facility connection edges AFTER agents have finalized delivery methods
     build_facility_connections(duckdb_con)
