@@ -823,18 +823,6 @@ def setup_agents(llm, tsp_results_dict, input_report):
         Tuple of (agents_list, tasks_list)
     """
 
-    # Build compact summary of ALL regions for agent prompts
-    region_summaries = []
-    for region, methods in tsp_results_dict.items():
-        for method, data in methods.items():
-            region_summaries.append(
-                f"- {region} / {method}: {data['num_sites']} sites, "
-                f"{data['length']:.0f} miles total"
-            )
-    all_regions_summary = "\n".join(region_summaries)
-    all_region_names = ", ".join(sorted(tsp_results_dict.keys()))
-    num_regions = len(tsp_results_dict)
-
     # ----- Agent 1: TSP Route Optimizer -----
     tsp_agent = Agent(
         role="TSP Route Optimizer",
@@ -858,14 +846,7 @@ def setup_agents(llm, tsp_results_dict, input_report):
 
         IMPORTANT: Base your output strictly on data returned by your tools.
         Do not invent or assume route details not present in the data.
-        You MUST cover ALL regions listed below.
 
-        ALL regions with computed routes:
-{all_regions_summary}
-
-        Complete list of regions: {all_region_names}
-
-        Steps:
         1. Use get_route_summary to get an overview of all routes
            (total distance, segment counts, facilities per route).
         2. Use query_tsp_routes for detailed per-route statistics
@@ -873,23 +854,17 @@ def setup_agents(llm, tsp_results_dict, input_report):
         3. For each region, use query_facility_connections to report
            facility connections and route membership.
 
+        The TSP results summary: {json.dumps(tsp_results_dict, indent=2)[:3000]}
+
         Note: Delivery method assignment was already handled in the
         regionalization step. Do not reassign or recommend delivery methods.
 
-        Present the route data in a clear, structured format with a
-        section for EACH region. Report the facts — leave analysis and
-        recommendations to other agents.""",
+        Present the route data in a clear, structured format. Report the
+        facts — leave analysis and recommendations to other agents.""",
         agent=tsp_agent,
-        expected_output=f"""A structured summary covering ALL {num_regions} regions:
-{all_region_names}
-
-For EACH region, provide:
-- Route ID, delivery method, number of segments
-- Total distance, avg/min/max segment distances
-- Number of facilities on the route
-- Key facility connections
-
-End with a summary table of all routes."""
+        expected_output="A structured summary of all computed routes with "
+                       "distances, segment counts, and facility details "
+                       "from the graph database."
     )
 
     # ----- Agent 2: Cost Estimator -----
@@ -920,15 +895,7 @@ End with a summary table of all routes."""
         structured format usable by other agents.""",
         agent=cost_estimator_agent,
         context=[tsp_task],
-        expected_output=f"""A cost analysis covering ALL {num_regions} regions ({all_region_names}):
-
-For EACH region/delivery method route:
-- Total estimated cost (based on distance x cost-per-mile for that method)
-- Cost breakdown by segment (top 3 most expensive segments highlighted)
-- Cost per facility served
-- Comparison to other routes using the same delivery method
-
-End with a cost summary table ranking routes by total cost and cost-efficiency."""
+        expected_output="A structured list of segments with estimated costs."
     )
 
     # ----- Agent 3: Operational Risk Agent -----
@@ -961,15 +928,7 @@ End with a cost summary table ranking routes by total cost and cost-efficiency."
         Suggest alternatives for high-risk segments.""",
         agent=operational_risk_agent,
         context=[tsp_task],
-        expected_output=f"""A risk analysis covering ALL {num_regions} regions ({all_region_names}):
-
-For EACH region/delivery method route:
-- Risk classification: High / Moderate / Low
-- Top risk factors specific to that region and delivery method
-- Seasonal vulnerability windows
-- Suggested alternatives for high-risk segments
-
-End with a risk summary table ranking routes by risk level."""
+        expected_output="A detailed risk analysis for each route/segment."
     )
 
     # Discussion between Risk and Cost agents
@@ -1024,16 +983,8 @@ End with a risk summary table ranking routes by risk level."""
         recommendations.""",
         agent=route_analyzer_agent,
         context=[tsp_task, cost_estimation_task, operational_risk_task],
-        expected_output=f"""A route-by-route assessment covering ALL {num_regions} regions ({all_region_names}):
-
-For EACH region/delivery method route:
-- **Efficiency**: Are there unusually long segments? Geographic sense?
-- **Cost-effectiveness**: Cost per mile, cost per facility, comparison to peers
-- **Operational viability**: Risk level, seasonal constraints
-- **Recommendation**: Keep as-is, split, restructure, or flag for review
-
-End with: top 3 most efficient routes, top 3 needing improvement, and overall
-assessment of the route network."""
+        expected_output="A route-by-route assessment with efficiency, cost, "
+                       "and risk evaluations plus actionable recommendations."
     )
 
     # ----- Agent 5: TSP Adjuster -----
@@ -1163,33 +1114,21 @@ assessment of the route network."""
     )
 
     writing_task = Task(
-        description=f"""Produce a comprehensive final report integrating
+        description="""Produce a comprehensive final report integrating
         all agent analyses, discussions, and critiques.
-
-        CRITICAL: This report MUST cover ALL of the following regions:
-        {all_region_names}
 
         Include:
         1. An engaging narrative on Alaska fuel delivery routes
-        2. Route analysis with optimization findings FOR EVERY REGION above
-        3. Cost-risk assessment for EACH region's routes
-        4. Clear, actionable recommendations per region
-        5. Overall findings and cross-region patterns
-        6. Agent Discussion Summary
-        7. Limitations (contrarian critique summary)
-
-        Do NOT focus on a single region. Every region must receive a
-        data-grounded summary. If space is limited, use bullet points
-        rather than dropping regions.
+        2. Route analysis with optimization findings
+        3. Cost-risk assessment for each region's routes
+        4. Clear, actionable recommendations
+        5. Agent Discussion Summary
+        6. Limitations (contrarian critique summary)
 
         ***Return a plain text document, NOT JSON.***""",
         agent=writing_agent,
-        expected_output=f"""A comprehensive plain text report (minimum 1500 words) that:
-- Covers ALL {num_regions} regions: {all_region_names}
-- Provides a data-grounded summary for each region (route stats, costs, risks)
-- Includes overall findings, cross-region patterns, and recommendations
-- Contains agent discussion summary and contrarian critique
-- Has actionable, region-specific recommendations"""
+        expected_output="A comprehensive plain text report with analysis, "
+                       "recommendations, and contrarian review."
     )
 
     agents = [tsp_agent, cost_estimator_agent, operational_risk_agent,
