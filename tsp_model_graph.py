@@ -31,6 +31,7 @@ Outputs:
 # ---------------------------------------------------------------------------
 import os
 import warnings
+from datetime import date
 warnings.filterwarnings('ignore', category=DeprecationWarning)
 
 import json
@@ -724,6 +725,18 @@ def get_route_summary() -> str:
     }, indent=2)
 
 
+@tool("save_report")
+def save_report(json_report: str) -> str:
+    """Save the final TSP analysis report as JSON.
+
+    Args:
+        json_report: The complete report as a JSON string.
+    """
+    with open('tsp_final_report.json', 'w', encoding='utf-8') as f:
+        f.write(json_report)
+    return "Report saved to tsp_final_report.json"
+
+
 # ===========================================================================
 # Graph-Write Tools for TSP Adjuster
 # ===========================================================================
@@ -854,7 +867,7 @@ def setup_agents(llm, tsp_results_dict, input_report):
         3. For each region, use query_facility_connections to report
            facility connections and route membership.
 
-        The TSP results summary: {json.dumps(tsp_results_dict, indent=2)[:3000]}
+        The TSP results summary: {json.dumps(tsp_results_dict, indent=2)}
 
         Note: Delivery method assignment was already handled in the
         regionalization step. Do not reassign or recommend delivery methods.
@@ -912,7 +925,7 @@ def setup_agents(llm, tsp_results_dict, input_report):
     operational_risk_task = Task(
         description=f"""Assess the risk for each fuel delivery segment.
         Use the TSP Agent's route analysis and Cost Estimator's cost data.
-        Reference the market analysis: {str(input_report)[:2000]}
+        Reference the market analysis: {str(input_report)}
 
         For each segment/route, evaluate:
         - **Weather:** Storm, ice, fog impact on segment feasibility
@@ -1045,7 +1058,8 @@ def setup_agents(llm, tsp_results_dict, input_report):
                   "and technical writing. Skilled at synthesizing complex "
                   "information from multiple agents.",
         verbose=True,
-        llm=llm
+        llm=llm,
+        tools=[save_report]
     )
 
     multi_agent_discussion_task = Task(
@@ -1113,22 +1127,74 @@ def setup_agents(llm, tsp_results_dict, input_report):
         expected_output="Follow-up critiques or confirmation of resolution."
     )
 
+    _regions_list = list(tsp_results_dict.keys())
+    _regions_bullet = "\n    ".join(f"- {r}" for r in _regions_list)
+    _report_desc = (
+        """Produce a comprehensive final report integrating all agent
+        analyses, discussions, and critiques.
+
+        IMPORTANT: You MUST cover ALL of the following regions individually:
+    """ + _regions_bullet + """
+
+        The report should be a single JSON document. Use the save_report
+        tool to save it. The JSON must follow this structure:
+
+        {
+        "title": "Alaska Fuel Delivery TSP Route Optimization Report",
+        "date_generated": \"""" + date.today().isoformat() + """\",
+        "executive_summary": "2-3 paragraphs summarizing key findings across ALL regions",
+        "market_dynamics": "Current market trends, fuel prices, and demand drivers relevant to route optimization",
+        "environmental_concerns": "Climate, weather, and seasonal constraints affecting delivery routes across Alaska",
+        "regional_route_analysis": {
+            "<region_name>": {
+                "optimized_routes": "Description of optimized route paths, distances, and number of facilities",
+                "delivery_methods": "Methods used in this region and rationale",
+                "cost_analysis": "Estimated costs and cost drivers for this region",
+                "risk_assessment": "Key risks and mitigation strategies for this region",
+                "key_findings": "Notable observations for this region"
+            }
+        },
+        "recommendations": {
+            "strategic_priorities": [
+                {"priority": "Name", "description": "Details",
+                 "implementation_steps": ["Step 1", "Step 2"],
+                 "expected_impact": "Outcome"}
+            ],
+            "operational_improvements": [
+                {"improvement": "Name", "description": "Details",
+                 "expected_impact": "Outcome"}
+            ]
+        },
+        "agent_discussion_summary": {
+            "overview": "How the multi-agent discussion shaped the analysis",
+            "key_insights": ["Insight 1", "Insight 2"],
+            "impact_on_recommendations": "How discussion influenced final recommendations"
+        },
+        "limitations": {
+            "contrarian_critique": "Summary of contrarian critique",
+            "response_to_critique": "How concerns were addressed",
+            "acknowledged_limitations": ["Limitation 1"],
+            "areas_for_further_research": ["Area 1"]
+        },
+        "metadata": {
+            "regions_covered": """ + json.dumps(_regions_list) + """,
+            "agents_involved": ["TSP Route Optimizer", "Cost Estimator",
+                "Operational Risk Agent", "Route Analyzer",
+                "Writing Agent", "Contrarian Agent"],
+            "data_sources": ["regionalization.duckdb graph database",
+                "market_cost_analysis_report.json"],
+            "confidence_level": "High/Medium/Low"
+        }
+        }
+
+        You MUST include a separate entry in "regional_route_analysis" for
+        EACH region listed above. Do not skip or combine regions."""
+    )
     writing_task = Task(
-        description="""Produce a comprehensive final report integrating
-        all agent analyses, discussions, and critiques.
-
-        Include:
-        1. An engaging narrative on Alaska fuel delivery routes
-        2. Route analysis with optimization findings
-        3. Cost-risk assessment for each region's routes
-        4. Clear, actionable recommendations
-        5. Agent Discussion Summary
-        6. Limitations (contrarian critique summary)
-
-        ***Return a plain text document, NOT JSON.***""",
+        description=_report_desc,
         agent=writing_agent,
-        expected_output="A comprehensive plain text report with analysis, "
-                       "recommendations, and contrarian review."
+        expected_output="A comprehensive JSON report saved to "
+                       "tsp_final_report.json via the save_report tool."
     )
 
     agents = [tsp_agent, cost_estimator_agent, operational_risk_agent,
@@ -1233,9 +1299,10 @@ def main():
     print("=" * 60)
     print(result)
 
-    # Save report
-    with open('tsp_final_report.json', 'w', encoding='utf-8') as f:
-        json.dump({"result": str(result)}, f, indent=4)
+    # Save report (fallback if the agent didn't use the save_report tool)
+    if not os.path.exists('tsp_final_report.json'):
+        with open('tsp_final_report.json', 'w', encoding='utf-8') as f:
+            json.dump({"result": str(result)}, f, indent=4)
 
     # Print final graph state
     print("\nFinal graph database state:")
