@@ -31,6 +31,7 @@ Outputs:
 import os
 import json
 import warnings
+from datetime import date
 import duckdb
 
 warnings.filterwarnings('ignore', category=DeprecationWarning)
@@ -496,8 +497,7 @@ def setup_agents(llm):
     )
 
     # ----- Phase 4: Final Report -----
-    final_report_task = Task(
-        description="""Produce a comprehensive final report integrating all
+    _final_report_desc = """Produce a comprehensive final report integrating all
         agent analyses, the multi-agent discussion, and the contrarian review.
 
         The report should be a single JSON document with the following
@@ -554,7 +554,9 @@ def setup_agents(llm):
                 "Agent domain knowledge"],
             "confidence_level": "High/Medium/Low"
         }
-        }""",
+        }""".replace("YYYY-MM-DD", date.today().isoformat())
+    final_report_task = Task(
+        description=_final_report_desc,
         agent=writing_agent,
         expected_output="A comprehensive JSON report saved to "
                        "market_cost_analysis_report.json via the save_report tool."
