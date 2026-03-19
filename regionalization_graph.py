@@ -904,7 +904,7 @@ logistics_agent = Agent(
 )
 
 logistics_task = Task(
-    description=f"""
+    description="""
     Review the updated dictionary provided in the previous task:{final_regionalized_dict}
 
     IMPORTANT: Ground your assessment in the actual data provided. Reference specific facility
