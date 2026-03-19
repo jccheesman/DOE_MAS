@@ -34,6 +34,7 @@ Outputs:
 import os
 import json
 import math
+from collections import defaultdict
 import duckdb
 import pandas as pd
 import geopandas as gpd
@@ -61,11 +62,7 @@ shapefile_path = 'Alaska_Energy_Authority_Library/Alaska_Energy_Authority_Librar
 
 # Globals
 global final_regionalized_dict
-global bulk_fuel_dict_with_regions
-global unassigned_dict
 final_regionalized_dict = {}
-bulk_fuel_dict_with_regions = {}
-unassigned_dict = {}
 
 
 # ---------------------------------------------------------------------------
@@ -285,8 +282,7 @@ def group_sites_by_region(bulk_fuel_csv_path, shapefile_path, region_column, con
     """Perform spatial join and load facility-region relationships into DuckDB.
 
     Takes bulk fuel facility data and Alaska regional shapefile, performs
-    spatial join, populates the graph database, and builds in-memory
-    dictionaries for downstream use.
+    spatial join, and populates the graph database.
 
     Parameters:
         bulk_fuel_csv_path: Path to CSV with bulk fuel facility data
@@ -294,7 +290,6 @@ def group_sites_by_region(bulk_fuel_csv_path, shapefile_path, region_column, con
         region_column: Name of the region column in the shapefile
         con: DuckDB connection with graph schema
     """
-    global bulk_fuel_dict_with_regions, unassigned_dict
 
     # Process input data
     bulk_fuel_data = pd.read_csv(
@@ -399,22 +394,8 @@ def group_sites_by_region(bulk_fuel_csv_path, shapefile_path, region_column, con
                     [facility_id, region_value]
                 )
 
-            # Build in-memory dictionary
-            bulk_fuel_dict_with_regions[facility_id] = {
-                'FacilityID': facility_id,
-                'Longitude': longitude,
-                'Latitude': latitude,
-                'Delivery_method': delivery_method,
-                'Region': region_value
-            }
         else:
-            unassigned_dict[facility_id] = {
-                'FacilityID': facility_id,
-                'Longitude': longitude,
-                'Latitude': latitude,
-                'Delivery_method': delivery_method,
-                'Region': 'Unassigned'
-            }
+            pass  # Facility without region — already in facilities table
 
     # Update facility counts per region
     con.execute("""
@@ -428,12 +409,9 @@ def group_sites_by_region(bulk_fuel_csv_path, shapefile_path, region_column, con
     result_df = pd.DataFrame(sites_with_regions.drop(columns='geometry'))
     result_df.to_csv('sites_with_regions.csv', index=False)
 
-    # Statistics
-    total_sites = len(bulk_fuel_dict_with_regions)
-    sites_with_region = sum(
-        1 for v in bulk_fuel_dict_with_regions.values()
-        if v['Region'] is not None
-    )
+    # Statistics from graph
+    total_sites = con.execute("SELECT COUNT(*) FROM facilities").fetchone()[0]
+    sites_with_region = con.execute("SELECT COUNT(*) FROM located_in").fetchone()[0]
     sites_without_region = total_sites - sites_with_region
 
     summary = f"""
@@ -446,8 +424,6 @@ def group_sites_by_region(bulk_fuel_csv_path, shapefile_path, region_column, con
     Results saved to 'sites_with_regions.csv'
     """
     print(summary)
-
-    return bulk_fuel_dict_with_regions, unassigned_dict
 
 
 # ---------------------------------------------------------------------------
@@ -546,7 +522,6 @@ def build_facility_connections(con):
     """).fetchall()
 
     # Group by (region, method)
-    from collections import defaultdict
     groups = defaultdict(list)
     for fid, lon, lat, region, method in rows:
         groups[(region, method)].append((fid, lon, lat))
@@ -679,39 +654,24 @@ def get_region_statistics(csv_path='sites_with_regions.csv'):
     return stats
 
 
-def structure_regional_dictionaries(bulk_fuel_dict_with_regions):
-    """Create a regional nested dictionary for each region in Alaska.
+def plot_by_regions(con):
+    """Plot facilities by region using separate colors, querying the graph DB.
 
     Parameters:
-        bulk_fuel_dict_with_regions: Flat dictionary of facility data
-
-    Returns:
-        dict: Nested dictionary keyed by region
+        con: DuckDB connection
     """
-    temp_regional_dict = {}
-    for facility_id, data in bulk_fuel_dict_with_regions.items():
-        region = data.get('Region')
-        if region is None:
-            continue
-        if region not in temp_regional_dict:
-            temp_regional_dict[region] = {}
-        temp_regional_dict[region][facility_id] = {
-            'FacilityID': facility_id,
-            'Longitude': data['Longitude'],
-            'Latitude': data['Latitude'],
-            'Delivery_method': data['Delivery_method']
-        }
+    rows = con.execute("""
+        SELECT f.facility_id, f.longitude, f.latitude,
+               COALESCE(li.region_name, 'Unassigned') AS region_name
+        FROM facilities f
+        LEFT JOIN located_in li ON f.facility_id = li.facility_id
+        ORDER BY region_name
+    """).fetchall()
 
-    return temp_regional_dict
+    regions = defaultdict(list)
+    for fid, lon, lat, region in rows:
+        regions[region].append((lon, lat))
 
-
-def plot_by_regions(reg_dict, unassigned_dict):
-    """Plot facilities by region using separate colors.
-
-    Parameters:
-        reg_dict: Regional dictionary of facilities
-        unassigned_dict: Dictionary of unassigned facilities
-    """
     fig, ax = plt.subplots(figsize=(10, 10))
 
     colors = [
@@ -720,14 +680,17 @@ def plot_by_regions(reg_dict, unassigned_dict):
         '#469990', '#dcbeff', '#9A6324', '#808000'
     ]
 
-    for region, sites in reg_dict.items():
-        x = [site['Longitude'] for site in sites.values()]
-        y = [site['Latitude'] for site in sites.values()]
-        ax.scatter(x, y, color=colors.pop(), label=region)
+    for region, coords in regions.items():
+        if region == 'Unassigned':
+            continue
+        x = [c[0] for c in coords]
+        y = [c[1] for c in coords]
+        color = colors.pop() if colors else '#333333'
+        ax.scatter(x, y, color=color, label=region)
 
-    if unassigned_dict:
-        x = [site['Longitude'] for site in unassigned_dict.values()]
-        y = [site['Latitude'] for site in unassigned_dict.values()]
+    if 'Unassigned' in regions:
+        x = [c[0] for c in regions['Unassigned']]
+        y = [c[1] for c in regions['Unassigned']]
         ax.scatter(x, y, color='black', label='Unassigned', s=30, marker='x')
 
     ax.set_xlabel('Longitude')
@@ -740,33 +703,38 @@ def plot_by_regions(reg_dict, unassigned_dict):
     plt.close()
 
 
-def group_by_delivery_method(regional_dict):
-    """Group sites by delivery method within each region.
+def _build_dict_from_graph(con):
+    """Build the nested regionalized dictionary from the graph database.
+
+    Queries the graph for all facilities with their region and delivery method
+    assignments.  Facilities without a delivery method are grouped under
+    'Unassigned' so the CrewAI agents can see and fix them.
 
     Parameters:
-        regional_dict: Nested dictionary keyed by region
+        con: DuckDB connection
 
     Returns:
-        dict: Nested dictionary keyed by region, then delivery method
+        dict: Nested dict keyed by region → delivery_method → facility_id →
+              {Longitude, Latitude}
     """
     global final_regionalized_dict
-    temp_dict = {}
-    for region, sites in regional_dict.items():
-        for facility_id, data in sites.items():
-            delivery_method = data.get('Delivery_method')
-            if delivery_method is None:
-                continue
-            if region not in temp_dict:
-                temp_dict[region] = {}
-            if delivery_method not in temp_dict[region]:
-                temp_dict[region][delivery_method] = {}
-            if facility_id not in temp_dict[region][delivery_method]:
-                temp_dict[region][delivery_method][facility_id] = {
-                    'Longitude': data['Longitude'],
-                    'Latitude': data['Latitude']
-                }
+    rows = con.execute("""
+        SELECT f.facility_id, f.longitude, f.latitude,
+               li.region_name,
+               COALESCE(um.method_name, 'Unassigned') AS delivery_method
+        FROM facilities f
+        JOIN located_in li ON f.facility_id = li.facility_id
+        LEFT JOIN uses_method um ON f.facility_id = um.facility_id
+        ORDER BY li.region_name, delivery_method
+    """).fetchall()
 
-    final_regionalized_dict = temp_dict
+    result = {}
+    for fid, lon, lat, region, method in rows:
+        result.setdefault(region, {}).setdefault(method, {})[str(fid)] = {
+            'Longitude': lon, 'Latitude': lat
+        }
+
+    final_regionalized_dict = result
     return final_regionalized_dict
 
 
@@ -775,30 +743,53 @@ def group_by_delivery_method(regional_dict):
 # ---------------------------------------------------------------------------
 
 @tool("add_new_delivery_methods")
-def add_new_delivery_methods():
-    """Function to add delivery methods to the regionalized dictionary"""
-    global final_regionalized_dict
-    for region in final_regionalized_dict.items():
-        for methods in region.items():
-            for facilities in methods.items():
-                if facility_id in facilities:
-                    if delivery_method == methods:
-                        print("Already has correct delivery method.")
-                        continue
-                    else:
-                        facilities.remove(facility_id)
-                        print(f"  Removed {facility_id} from {methods} in {region}")
-                        if delivery_method not in final_regionalized_dict[region]:
-                            final_regionalized_dict[region][delivery_method] = []
-                        final_regionalized_dict[region][delivery_method].append(facility_id)
-                        print(f"Added {facility_id} to {delivery_method} in {region}")
-    return final_regionalized_dict
+def add_new_delivery_methods(facility_id: int, delivery_method: str, region: str) -> str:
+    """Assign or update a facility's delivery method in the graph database.
+
+    Args:
+        facility_id: The facility ID to update.
+        delivery_method: The delivery method to assign (Road, Barge, or Plane).
+        region: The region the facility belongs to (for confirmation logging).
+    """
+    con = duckdb.connect(database=DB_PATH)
+    # Ensure delivery method node exists
+    con.execute(
+        "INSERT INTO delivery_methods VALUES (?) ON CONFLICT DO NOTHING",
+        [delivery_method]
+    )
+    # Remove old assignment if any
+    con.execute("DELETE FROM uses_method WHERE facility_id = ?", [facility_id])
+    # Insert new assignment
+    con.execute("INSERT INTO uses_method VALUES (?, ?)", [facility_id, delivery_method])
+    # Also update the delivery_method column on the facility node
+    con.execute(
+        "UPDATE facilities SET delivery_method = ? WHERE facility_id = ?",
+        [delivery_method, facility_id]
+    )
+    con.close()
+    return f"Updated facility {facility_id} in {region} to delivery method: {delivery_method}"
 
 
 @tool("get_facility_dictionary")
 def get_facility_dictionary() -> str:
-    """Retrieves the complete facility dictionary with all site information"""
-    return json.dumps(final_regionalized_dict, indent=2)
+    """Retrieves facility data from the graph database, grouped by region and delivery method."""
+    con = duckdb.connect(database=DB_PATH)
+    rows = con.execute("""
+        SELECT f.facility_id, f.longitude, f.latitude,
+               li.region_name,
+               COALESCE(um.method_name, 'Unassigned') AS delivery_method
+        FROM facilities f
+        JOIN located_in li ON f.facility_id = li.facility_id
+        LEFT JOIN uses_method um ON f.facility_id = um.facility_id
+        ORDER BY li.region_name, delivery_method
+    """).fetchall()
+    con.close()
+    result = {}
+    for fid, lon, lat, region, method in rows:
+        result.setdefault(region, {}).setdefault(method, {})[str(fid)] = {
+            'Longitude': lon, 'Latitude': lat
+        }
+    return json.dumps(result, indent=2)
 
 
 @tool("update_facility_dictionary")
@@ -821,22 +812,22 @@ def save_json(json_report: str):
 
 
 def save_as_csv():
-    """Save the 'final_regionalized_dict' as a csv file."""
-    global final_regionalized_dict
-    rows = []
-    for region, delivery_methods in final_regionalized_dict.items():
-        for delivery_method, facilities in delivery_methods.items():
-            for facility_id, data in facilities.items():
-                rows.append({
-                    'Region': region,
-                    'Delivery_method': delivery_method,
-                    'Facility_id': facility_id,
-                    'Longitude': data['Longitude'],
-                    'Latitude': data['Latitude']
-                })
-    final_df = pd.DataFrame(rows)
-    final_df.to_csv('regionalized_df.csv', index=False)
-    return final_df
+    """Save regionalized facility data as a CSV file, querying the graph DB."""
+    con = duckdb.connect(database=DB_PATH)
+    df = con.execute("""
+        SELECT li.region_name AS Region,
+               COALESCE(um.method_name, 'Unassigned') AS Delivery_method,
+               f.facility_id AS Facility_id,
+               f.longitude AS Longitude,
+               f.latitude AS Latitude
+        FROM facilities f
+        JOIN located_in li ON f.facility_id = li.facility_id
+        LEFT JOIN uses_method um ON f.facility_id = um.facility_id
+        ORDER BY Region, Delivery_method, Facility_id
+    """).fetchdf()
+    con.close()
+    df.to_csv('regionalized_df.csv', index=False)
+    return df
 
 
 # ---------------------------------------------------------------------------
@@ -858,7 +849,9 @@ delivery_method_agent = Agent(
 
 delivery_task = Task(
     description=f"""
-    Use the get_facility_dictionary tool to retrieve the current facility data.
+    Use the get_facility_dictionary tool to retrieve the current facility data from the graph database.
+    The dictionary is nested: region → delivery_method → facility_id → {{Longitude, Latitude}}.
+    Facilities without a delivery method appear under the 'Unassigned' key within their region.
 
     IMPORTANT: Base all decisions on the actual facility data retrieved from the dictionary.
     Do not infer or assume delivery methods beyond what is present in the data.
@@ -866,19 +859,22 @@ delivery_task = Task(
 
     Complete the following tasks:
     1. Analyze the dictionary to ensure each site has a delivery method specified.
-        a. If sites do not have a specified delivery method:
+        a. If sites are listed under 'Unassigned' (no delivery method):
           - Examine delivery methods used by other facilities in the same region
           - Assign the most common delivery method from that region
           - If the region has mixed methods, assign based on geographic proximity patterns
-          - With the facility ID and delivery method, add to the dictionary using add_new_delivery_methods tool.
+          - Call add_new_delivery_methods(facility_id=<id>, delivery_method=<method>, region=<region>)
+            for each facility that needs assignment.
         b. If sites have multiple delivery methods (e.g., 'Plane or Barge', 'Plane or Road'):
           - Resolve to a single delivery method using cost-risk analysis.
           - Consider these cost factors per mile: Road ~$2-5, Barge ~$1-3, Plane ~$8-15.
           - Consider these risk factors: weather/ice impact on barges, road conditions for trucks, visibility for planes.
           - Consider the site's geographic context (coastal sites may favor barge, inland sites may favor road).
           - Assign the single most cost-effective and lowest-risk method.
-          - Update the site using the add_new_delivery_methods tool with the chosen single method.
-  2. Once complete, return the dictionary in the same format as the input dictionary using the update_facility_dictionary tool""",
+          - Call add_new_delivery_methods(facility_id=<id>, delivery_method=<method>, region=<region>)
+            with the chosen single method.
+    2. Once complete, use get_facility_dictionary again to retrieve the updated data and return it
+       using the update_facility_dictionary tool.""",
     agent=delivery_method_agent,
     expected_output=
     '''In JSON format:
@@ -998,12 +994,12 @@ def run_regionalization(bulk_fuel_csv_path, shapefile_path, region_column=None):
     # Step 5: Print graph summary
     query_graph_summary(duckdb_con)
 
-    # Step 6: Structure dictionaries and plot
-    regional_dict = structure_regional_dictionaries(bulk_fuel_dict_with_regions)
-    plot_by_regions(regional_dict, unassigned_dict)
-    final_regionalized_dict = group_by_delivery_method(regional_dict)
+    # Step 6: Plot facilities by region and build initial dict from graph
+    plot_by_regions(duckdb_con)
+    _build_dict_from_graph(duckdb_con)
 
     # Step 7: Run CrewAI (resolves multi-method sites and assigns missing delivery methods)
+    # Agents now read/write directly to the graph DB via tools.
     print("Running CrewAI approach...")
     print("=" * 50)
 
@@ -1023,7 +1019,10 @@ def run_regionalization(bulk_fuel_csv_path, shapefile_path, region_column=None):
     print("=" * 50)
     print(result)
 
-    # Step 8: Build facility connection edges AFTER agents have finalized delivery methods
+    # Step 8: Rebuild dict from graph after agent updates
+    _build_dict_from_graph(duckdb_con)
+
+    # Step 9: Build facility connection edges AFTER agents have finalized delivery methods
     build_facility_connections(duckdb_con)
 
     return final_regionalized_dict
