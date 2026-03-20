@@ -12,6 +12,7 @@ All modules share the same DuckDB database file (regionalization.duckdb).
 
 import os
 import json
+import sys
 from pathlib import Path
 import regionalization_graph
 import market_cost_analysis
@@ -41,32 +42,63 @@ def should_run(step):
         return False
     return True
 
+def run_step(step_name, step_func):
+    """Run a pipeline step with Ollama health check and timeout retry."""
+    if not should_run(step_name):
+        return
+
+    pipeline.check_ollama()
+    try:
+        step_func()
+    except Exception as e:
+        if "timed out" in str(e).lower() or "timeout" in str(e).lower():
+            print(f"\nTimeout on {step_name}, checking Ollama and retrying...")
+            pipeline.check_ollama()
+            step_func()  # retry once
+        else:
+            raise
+    save_checkpoint(step_name)
+
+
 if __name__ == "__main__":
     os.makedirs("outputs", exist_ok=True)
+
+    # Set up file logging so overnight runs can be fully reviewed
+    log_file = pipeline.setup_logging()
+
+    # Tee stdout/stderr to the log file so print() output is also captured
+    class Tee:
+        def __init__(self, *streams):
+            self.streams = streams
+        def write(self, data):
+            for s in self.streams:
+                s.write(data)
+                s.flush()
+        def flush(self):
+            for s in self.streams:
+                s.flush()
+
+    _log_fh = open(log_file, "a")
+    sys.stdout = Tee(sys.__stdout__, _log_fh)
+    sys.stderr = Tee(sys.__stderr__, _log_fh)
 
     # Step 1: Regionalization - creates the graph database
     print("=" * 60)
     print("STEP 1: Regionalization (Graph Database Creation)")
     print("=" * 60)
-    if should_run("regionalization"):
-        regionalization_graph.main()
-        save_checkpoint("regionalization")
+    run_step("regionalization", regionalization_graph.main)
 
     # Step 2: Market & Cost Analysis - reads graph DB (read-only)
     print("\n" + "=" * 60)
     print("STEP 2: Market & Cost Analysis")
     print("=" * 60)
-    if should_run("market_cost_analysis"):
-        market_cost_analysis.main()
-        save_checkpoint("market_cost_analysis")
+    run_step("market_cost_analysis", market_cost_analysis.main)
 
     # Step 3: TSP Route Optimization - reads & writes to graph DB
     print("\n" + "=" * 60)
     print("STEP 3: TSP Route Optimization")
     print("=" * 60)
-    if should_run("tsp_optimization"):
-        tsp_model_graph.main()
-        save_checkpoint("tsp_optimization")
+    run_step("tsp_optimization", tsp_model_graph.main)
 
     # Step 4: Copy JSON outputs to outputs folder
     print("\n" + "=" * 60)
@@ -77,8 +109,8 @@ if __name__ == "__main__":
     print("\nPipeline complete.")
 
     # Reset checkpoints so the pipeline can be re-run for new output variations.
-    # Checkpoints only protect against mid-run crashes; once all steps succeed,
-    # clear them to allow fresh runs.
     if Path(CHECKPOINT_FILE).exists():
         Path(CHECKPOINT_FILE).unlink()
         print("Checkpoints cleared for next run.")
+
+    _log_fh.close()

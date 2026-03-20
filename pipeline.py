@@ -6,10 +6,17 @@ need to be access by successive runs'''
 
 import pandas as pd
 import os
-import geopandas as gpd 
+import geopandas as gpd
 import json
 import shutil
-from pathlib import Path 
+import subprocess
+import sys
+import time
+import logging
+import urllib.request
+import urllib.error
+from pathlib import Path
+from datetime import datetime
 
 def set_cwd(path):
 	print(os.getcwd())
@@ -53,9 +60,52 @@ def get_llm():
 	return LLM(
 		model=model,
 		base_url=api_base,
-		timeout=1800,       # 30 min — 70B model can be slow on complex prompts
+		timeout=3600,       # 60 min — 70B model can be slow on complex prompts
 		num_retries=3,      # retry on transient connection errors
 	)
+
+
+def check_ollama(max_retries=3, wait_seconds=10):
+    """Verify Ollama is responsive; attempt restart if not."""
+    api_base = os.getenv("OLLAMA_API_BASE", "http://localhost:11434")
+    url = f"{api_base}/api/tags"
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            req = urllib.request.urlopen(url, timeout=15)
+            req.close()
+            print(f"Ollama health check passed (attempt {attempt})")
+            return True
+        except (urllib.error.URLError, OSError) as e:
+            print(f"Ollama health check failed (attempt {attempt}/{max_retries}): {e}")
+            if attempt < max_retries:
+                print("Attempting to restart Ollama...")
+                subprocess.run(["systemctl", "restart", "ollama"], capture_output=True)
+                print(f"Waiting {wait_seconds}s for Ollama to start...")
+                time.sleep(wait_seconds)
+
+    raise ConnectionError(
+        f"Ollama is not responding at {api_base} after {max_retries} attempts. "
+        "Check that the Ollama service is running."
+    )
+
+
+def setup_logging(log_dir="outputs"):
+    """Configure logging to both console and a timestamped log file."""
+    os.makedirs(log_dir, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_file = os.path.join(log_dir, f"pipeline_{timestamp}.log")
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        handlers=[
+            logging.FileHandler(log_file),
+            logging.StreamHandler(sys.stdout),
+        ],
+    )
+    print(f"Logging to: {log_file}")
+    return log_file
 
 
 def save_json(source_folder=".", output_folder_name="outputs", pattern="*.json"):
