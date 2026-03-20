@@ -75,3 +75,10 @@ if __name__ == "__main__":
     pipeline.save_json()
 
     print("\nPipeline complete.")
+
+    # Reset checkpoints so the pipeline can be re-run for new output variations.
+    # Checkpoints only protect against mid-run crashes; once all steps succeed,
+    # clear them to allow fresh runs.
+    if Path(CHECKPOINT_FILE).exists():
+        Path(CHECKPOINT_FILE).unlink()
+        print("Checkpoints cleared for next run.")
