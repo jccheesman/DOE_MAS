@@ -10,29 +10,95 @@ This replaces run.py and calls the new graph-integrated modules:
 All modules share the same DuckDB database file (regionalization.duckdb).
 """
 
+import os
+import json
+import sys
+from pathlib import Path
 import regionalization_graph
 import market_cost_analysis
 import tsp_model_graph
 import pipeline
 
+CHECKPOINT_FILE = "outputs/.checkpoint"
+
+
+def load_checkpoint():
+    if Path(CHECKPOINT_FILE).exists():
+        return json.loads(Path(CHECKPOINT_FILE).read_text())
+    return {"completed_steps": []}
+
+
+def save_checkpoint(step):
+    cp = load_checkpoint()
+    if step not in cp["completed_steps"]:
+        cp["completed_steps"].append(step)
+    Path(CHECKPOINT_FILE).write_text(json.dumps(cp))
+    print(f"  Checkpoint saved: {step}")
+
+
+def should_run(step):
+    if step in load_checkpoint()["completed_steps"]:
+        print(f"  Skipping {step} (already complete)")
+        return False
+    return True
+
+def run_step(step_name, step_func):
+    """Run a pipeline step with Ollama health check and timeout retry."""
+    if not should_run(step_name):
+        return
+
+    pipeline.check_ollama()
+    try:
+        step_func()
+    except Exception as e:
+        if "timed out" in str(e).lower() or "timeout" in str(e).lower():
+            print(f"\nTimeout on {step_name}, checking Ollama and retrying...")
+            pipeline.check_ollama()
+            step_func()  # retry once
+        else:
+            raise
+    save_checkpoint(step_name)
+
+
 if __name__ == "__main__":
+    os.makedirs("outputs", exist_ok=True)
+
+    # Set up file logging so overnight runs can be fully reviewed
+    log_file = pipeline.setup_logging()
+
+    # Tee stdout/stderr to the log file so print() output is also captured
+    class Tee:
+        def __init__(self, *streams):
+            self.streams = streams
+        def write(self, data):
+            for s in self.streams:
+                s.write(data)
+                s.flush()
+        def flush(self):
+            for s in self.streams:
+                s.flush()
+
+    _log_fh = open(log_file, "a")
+    sys.stdout = Tee(sys.__stdout__, _log_fh)
+    sys.stderr = Tee(sys.__stderr__, _log_fh)
+
     # Step 1: Regionalization - creates the graph database
     print("=" * 60)
     print("STEP 1: Regionalization (Graph Database Creation)")
     print("=" * 60)
-    regionalization_graph.main()
+    run_step("regionalization", regionalization_graph.main)
 
     # Step 2: Market & Cost Analysis - reads graph DB (read-only)
     print("\n" + "=" * 60)
     print("STEP 2: Market & Cost Analysis")
     print("=" * 60)
-    market_cost_analysis.main()
+    run_step("market_cost_analysis", market_cost_analysis.main)
 
     # Step 3: TSP Route Optimization - reads & writes to graph DB
     print("\n" + "=" * 60)
     print("STEP 3: TSP Route Optimization")
     print("=" * 60)
-    tsp_model_graph.main()
+    run_step("tsp_optimization", tsp_model_graph.main)
 
     # Step 4: Copy JSON outputs to outputs folder
     print("\n" + "=" * 60)
@@ -41,3 +107,10 @@ if __name__ == "__main__":
     pipeline.save_json()
 
     print("\nPipeline complete.")
+
+    # Reset checkpoints so the pipeline can be re-run for new output variations.
+    if Path(CHECKPOINT_FILE).exists():
+        Path(CHECKPOINT_FILE).unlink()
+        print("Checkpoints cleared for next run.")
+
+    _log_fh.close()

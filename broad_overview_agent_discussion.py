@@ -34,6 +34,7 @@ Outputs:
 #@title Import necessary libraries
 import os
 import warnings
+from datetime import date
 warnings.filterwarnings('ignore', category=DeprecationWarning)
 from crewai import Agent, Task, Crew, LLM, Process
 from crewai.tools import tool
@@ -271,7 +272,7 @@ def setup_agents(llm, input_data, input_report):
             "areas_for_further_research": ["Research area 1", "Research area 2"]}},
 
         "metadata": {{
-            "date_generated": "YYYY-MM-DD",
+            "date_generated": "{date.today().isoformat()}",
             "agents_involved": ["Delivery Analyst", "Market Analyst", "Contrarian Agent", "Writing Agent"],
             "data_sources": ["Source 1", "Source 2"],
             "confidence_level": "High/Medium/Low"}}

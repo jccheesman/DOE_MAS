@@ -8,9 +8,11 @@ dictionaries, it queries the shared DuckDB graph database for facility
 data and writes computed routes back to the graph as edges.
 
 Agents:
-    - TSP Route Optimizer: Analyzes computed routes
+    - TSP Route Optimizer: Queries graph DB for computed route data
     - Cost Estimator: Assigns cost values to route segments
     - Operational Risk Agent: Assesses segment risks
+    - Route Analyzer: Assesses route quality using cost + risk inputs
+    - TSP Route Adjuster: Fixes flagged routes in the graph database
     - Writing Agent: Synthesizes findings into a report
     - Contrarian Agent: Provides critical review
 
@@ -29,6 +31,7 @@ Outputs:
 # ---------------------------------------------------------------------------
 import os
 import warnings
+from datetime import date
 warnings.filterwarnings('ignore', category=DeprecationWarning)
 
 import json
@@ -41,12 +44,10 @@ import duckdb
 import networkx as nx
 import matplotlib.pyplot as plt
 import geopandas as gpd
-from collections import defaultdict, namedtuple
 from typing import Set, List, Tuple, Iterable, Callable, Dict
 
-from crewai import Agent, Task, Crew, LLM, Process
+from crewai import Agent, Task, Crew, Process
 from crewai.tools import tool
-from dotenv import load_dotenv
 import pipeline
 
 # ---------------------------------------------------------------------------
@@ -212,38 +213,6 @@ def first(collection):
 
 
 # ===========================================================================
-# Named Tuples (unchanged)
-# ===========================================================================
-
-class RegionalTourResult(namedtuple('_', 'region, tour, length, secs, num_sites')):
-    """Result for a single region's TSP tour."""
-    def __repr__(self):
-        return (f"Region: {self.region:>20} | Sites: {self.num_sites:>3} | "
-                f"Length: {round(self.length):>6,d} miles | Time: {self.secs:6.3f}s")
-
-
-all_results = defaultdict(list)
-
-
-class Result(namedtuple('_', 'tsp, opt, tour, cities, secs')):
-    """A Result records the results of a run on a TSP."""
-    def __repr__(self):
-        best = min(
-            [tour_length(r.tour) for r in all_results[self.cities]],
-            default=tour_length(self.tour)
-        )
-        return (
-            f"{name(self.tsp, self.opt):>25}: length "
-            f"{round(tour_length(self.tour)):,d} tour "
-            f"({tour_length(self.tour) / best:5.1%}) in {self.secs:6.3f} secs"
-        )
-
-
-def name(tsp, opt=None) -> str:
-    return tsp.__name__ + (('+' + opt.__name__) if opt else '')
-
-
-# ===========================================================================
 # Visualization Helpers (unchanged)
 # ===========================================================================
 
@@ -320,7 +289,8 @@ def run_regional_tsp(con, tsp_algo=greedy_tsp, optimize=True):
         optimize: Whether to apply 2-opt optimization (default: True)
 
     Returns:
-        results: nested dict results[region][method] = RegionalTourResult
+        results: nested dict results[region][method] = dict with keys:
+                 region, tour, length, secs, num_sites
         facility_maps: dict mapping (region, method) -> {complex: facility_id}
     """
     groups, facility_maps = get_regional_cities(con)
@@ -342,13 +312,13 @@ def run_regional_tsp(con, tsp_algo=greedy_tsp, optimize=True):
             t1 = time.perf_counter()
 
             length = tour_length(tour)
-            results[region][method] = RegionalTourResult(
-                region=region,
-                tour=tour,
-                length=length,
-                secs=t1 - t0,
-                num_sites=len(cities)
-            )
+            results[region][method] = {
+                'region': region,
+                'tour': tour,
+                'length': length,
+                'secs': t1 - t0,
+                'num_sites': len(cities)
+            }
             print(f"  {region} / {method}: {len(cities)} sites, "
                   f"{length:.0f} mi, {t1 - t0:.3f}s")
         except Exception as e:
@@ -364,7 +334,7 @@ def write_routes_to_graph(con, results, facility_maps):
 
     Args:
         con: DuckDB connection (must be read-write)
-        results: nested dict results[region][method] = RegionalTourResult
+        results: nested dict results[region][method] = dict
         facility_maps: dict mapping (region, method) -> {complex: facility_id}
     """
     # Clear previous route data
@@ -376,7 +346,7 @@ def write_routes_to_graph(con, results, facility_maps):
     for region in results:
         for method in results[region]:
             result = results[region][method]
-            tour = result.tour
+            tour = result['tour']
             route_id += 1
             fmap = facility_maps.get((region, method), {})
 
@@ -401,27 +371,21 @@ def write_routes_to_graph(con, results, facility_maps):
           f"to part_of_route table.")
 
 
-def convert_results_for_crewai(results):
-    """Convert RegionalTourResult namedtuples to dicts for CrewAI.
+def serialize_tours(results):
+    """Convert complex City objects in tour dicts to JSON-serializable format.
 
-    Input: results[region][delivery_method] = RegionalTourResult
-    Output: Same nested structure but with JSON-serializable dicts
+    Input: results[region][delivery_method] = dict with 'tour' as list of complex
+    Output: Same structure but with tour as list of {longitude, latitude} dicts
     """
     converted = {}
-    for region, delivery_methods in results.items():
+    for region, methods in results.items():
         converted[region] = {}
-        for dm, result in delivery_methods.items():
-            if isinstance(result, dict):
-                converted[region][dm] = result
-            else:
-                converted[region][dm] = {
-                    'region': result.region,
-                    'tour': [{'longitude': city.real, 'latitude': city.imag}
-                             for city in result.tour],
-                    'length': result.length,
-                    'secs': result.secs,
-                    'num_sites': result.num_sites
-                }
+        for dm, result in methods.items():
+            converted[region][dm] = {
+                **result,
+                'tour': [{'longitude': c.real, 'latitude': c.imag}
+                         for c in result['tour']]
+            }
     return converted
 
 
@@ -434,7 +398,7 @@ def plot_regional_tours(con, results):
 
     Args:
         con: DuckDB connection (for facility count context)
-        results: nested dict results[region][method] = RegionalTourResult
+        results: nested dict results[region][method] = dict
     """
     num_regions = len(results)
     if num_regions == 0:
@@ -469,16 +433,16 @@ def plot_regional_tours(con, results):
             alaska.boundary.plot(ax=ax, color='black', linewidth=0.5, zorder=0)
 
         total_sites = sum(
-            results[region][gn].num_sites
+            results[region][gn]['num_sites']
             for gn in groups if gn in results[region]
         )
         ax.set_title(f"{region}\n{total_sites} sites, {len(groups)} tours")
 
         legend_list = []
         for group_name in sorted(groups.keys()):
-            tour = results[region][group_name].tour
-            num_sites = results[region][group_name].num_sites
-            length = results[region][group_name].length
+            tour = results[region][group_name]['tour']
+            num_sites = results[region][group_name]['num_sites']
+            length = results[region][group_name]['length']
 
             # Color by delivery method
             color_map = {
@@ -516,7 +480,8 @@ def plot_regional_tours(con, results):
         axes[idx].axis('off')
 
     plt.tight_layout()
-    plt.show()
+    plt.savefig("outputs/regional_tours.png", dpi=150, bbox_inches="tight")
+    plt.close()
 
 
 def visualize_final_graph(con):
@@ -639,7 +604,8 @@ def visualize_final_graph(con):
     ax.set_ylabel('Latitude')
     ax.set_title('Final Graph State: TSP Routes Overlaid on Facility Network')
     plt.tight_layout()
-    plt.show()
+    plt.savefig("outputs/final_graph.png", dpi=150, bbox_inches="tight")
+    plt.close()
 
     # Print summary statistics
     route_stats = con.execute("""
@@ -759,6 +725,101 @@ def get_route_summary() -> str:
     }, indent=2)
 
 
+@tool("save_report")
+def save_report(json_report: str) -> str:
+    """Save the final TSP analysis report as JSON.
+
+    Args:
+        json_report: The complete report as a JSON string.
+    """
+    with open('tsp_final_report.json', 'w', encoding='utf-8') as f:
+        f.write(json_report)
+    return "Report saved to tsp_final_report.json"
+
+
+# ===========================================================================
+# Graph-Write Tools for TSP Adjuster
+# ===========================================================================
+
+@tool("remove_route_segment")
+def remove_route_segment(route_id: int, sequence: int) -> str:
+    """Remove a specific segment from a route by route_id and sequence number.
+
+    Args:
+        route_id: The route ID to modify
+        sequence: The sequence number of the segment to remove
+    """
+    global graph_con
+    graph_con.execute(
+        "DELETE FROM part_of_route WHERE route_id = ? AND sequence = ?",
+        [route_id, sequence]
+    )
+    remaining = graph_con.execute(
+        "SELECT COUNT(*) FROM part_of_route WHERE route_id = ?",
+        [route_id]
+    ).fetchone()[0]
+    return f"Removed segment {sequence} from route {route_id}. {remaining} segments remaining."
+
+
+@tool("insert_route_segment")
+def insert_route_segment(src_facility_id: int, dst_facility_id: int,
+                         route_id: int, sequence: int,
+                         distance_miles: float) -> str:
+    """Insert a new segment into a route.
+
+    Args:
+        src_facility_id: Source facility ID
+        dst_facility_id: Destination facility ID
+        route_id: The route ID to add to
+        sequence: The sequence position for this segment
+        distance_miles: Distance in miles for this segment
+    """
+    global graph_con
+    graph_con.execute(
+        "INSERT INTO part_of_route VALUES (?, ?, ?, ?, ?)",
+        [src_facility_id, dst_facility_id, route_id, sequence, distance_miles]
+    )
+    return (f"Inserted segment: {src_facility_id} -> {dst_facility_id} "
+            f"(route {route_id}, seq {sequence}, {distance_miles:.1f} mi)")
+
+
+@tool("split_route")
+def split_route(route_id: int, split_after_sequence: int) -> str:
+    """Split a route into two separate routes at the given sequence point.
+    Segments with sequence <= split_after_sequence stay in the original route.
+    Segments with sequence > split_after_sequence get a new route_id.
+
+    Args:
+        route_id: The route ID to split
+        split_after_sequence: Split after this sequence number
+    """
+    global graph_con
+    # Find next available route_id
+    max_id = graph_con.execute(
+        "SELECT COALESCE(MAX(route_id), 0) FROM part_of_route"
+    ).fetchone()[0]
+    new_route_id = max_id + 1
+
+    # Update segments after the split point to the new route
+    graph_con.execute("""
+        UPDATE part_of_route
+        SET route_id = ?, sequence = sequence - ? - 1
+        WHERE route_id = ? AND sequence > ?
+    """, [new_route_id, split_after_sequence, route_id, split_after_sequence])
+
+    # Count segments in each route
+    orig_count = graph_con.execute(
+        "SELECT COUNT(*) FROM part_of_route WHERE route_id = ?", [route_id]
+    ).fetchone()[0]
+    new_count = graph_con.execute(
+        "SELECT COUNT(*) FROM part_of_route WHERE route_id = ?", [new_route_id]
+    ).fetchone()[0]
+
+    return (f"Split route {route_id} after sequence {split_after_sequence}. "
+            f"Original route: {orig_count} segments. "
+            f"New route {new_route_id}: {new_count} segments.")
+
+
 # ===========================================================================
 # Agent & Task Setup
 # ===========================================================================
@@ -777,44 +838,46 @@ def setup_agents(llm, tsp_results_dict, input_report):
 
     # ----- Agent 1: TSP Route Optimizer -----
     tsp_agent = Agent(
-        role="Route Optimizer and Analyst",
-        goal="Analyze the optimized delivery routes and provide insightful "
-             "analysis considering the Alaskan context. Use graph database "
-             "tools to examine route details.",
-        backstory="Expert in Traveling Salesperson solutions and data "
-                  "analysis, specializing in logistical challenges in remote "
-                  "environments. You have access to a graph database "
-                  "containing facility data and computed routes.",
+        role="TSP Route Optimizer",
+        goal="Query the graph database for computed TSP routes and present "
+             "accurate route data including distances, segments, and "
+             "facility connections for each region and delivery method.",
+        backstory="Expert in Traveling Salesperson solutions with access to "
+                  "a DuckDB graph database containing facility data and "
+                  "computed routes. You must query the database and report "
+                  "only what the data shows. Do not fabricate route details, "
+                  "distances, or facility information — only report what "
+                  "the tools return.",
         verbose=True,
         llm=llm,
         tools=[query_tsp_routes, query_facility_connections, get_route_summary]
     )
 
     tsp_task = Task(
-        description=f"""Analyze the optimized delivery routes computed by the
-        TSP algorithm. The routes are stored in the graph database.
+        description=f"""Retrieve and summarize the optimized delivery routes
+        from the graph database.
 
-        Use the get_route_summary tool to get an overview of all routes.
-        Use the query_tsp_routes tool for detailed route statistics.
+        IMPORTANT: Base your output strictly on data returned by your tools.
+        Do not invent or assume route details not present in the data.
 
-        The TSP results summary: {json.dumps(tsp_results_dict, indent=2)[:3000]}
+        1. Use get_route_summary to get an overview of all routes
+           (total distance, segment counts, facilities per route).
+        2. Use query_tsp_routes for detailed per-route statistics
+           (avg/min/max segment distances by region and delivery method).
+        3. For each region, use query_facility_connections to report
+           facility connections and route membership.
 
-        Analyze the route data and consider:
-        1. Are the computed routes efficient? Look at segment distances
-           and identify any unusually long segments.
-        2. For each region/delivery method group, assess whether the route
-           makes geographic sense.
-        3. Groups with 'Unknown' delivery method: recommend which method
-           to assign based on proximity to other groups.
-        4. Provide contextual recommendations considering Alaska's challenges:
-           limited road access, seasonal variations, reliance on air/barge.
-        5. Identify routes that might benefit from alternative groupings
-           or delivery methods.
+        The TSP results summary: {json.dumps(tsp_results_dict, indent=2)}
 
-        Present your analysis in a clear text format.""",
+        Note: Delivery method assignment was already handled in the
+        regionalization step. Do not reassign or recommend delivery methods.
+
+        Present the route data in a clear, structured format. Report the
+        facts — leave analysis and recommendations to other agents.""",
         agent=tsp_agent,
-        expected_output="A detailed analysis and recommendations based on "
-                       "the computed route data from the graph database."
+        expected_output="A structured summary of all computed routes with "
+                       "distances, segment counts, and facility details "
+                       "from the graph database."
     )
 
     # ----- Agent 2: Cost Estimator -----
@@ -862,7 +925,7 @@ def setup_agents(llm, tsp_results_dict, input_report):
     operational_risk_task = Task(
         description=f"""Assess the risk for each fuel delivery segment.
         Use the TSP Agent's route analysis and Cost Estimator's cost data.
-        Reference the market analysis: {str(input_report)[:2000]}
+        Reference the market analysis: {str(input_report)}
 
         For each segment/route, evaluate:
         - **Weather:** Storm, ice, fog impact on segment feasibility
@@ -891,7 +954,102 @@ def setup_agents(llm, tsp_results_dict, input_report):
         expected_output="An informed cost-risk assessment for each route."
     )
 
-    # ----- Agent 4: Writing Agent -----
+    # ----- Agent 4: Route Analyzer -----
+    route_analyzer_agent = Agent(
+        role="Route Analyzer",
+        goal="Assess whether computed delivery routes are practical, "
+             "cost-effective, and operationally sound by synthesizing "
+             "route data, cost estimates, and risk assessments.",
+        backstory="Expert in logistics network analysis with deep knowledge "
+                  "of Alaska's geography and fuel delivery constraints. "
+                  "You evaluate route quality by combining route data with "
+                  "cost and risk inputs from other agents. You identify "
+                  "routes that are too long, too costly, or ineffective "
+                  "and recommend improvements.",
+        verbose=True,
+        llm=llm
+    )
+
+    route_analysis_task = Task(
+        description="""Analyze the computed delivery routes using the route
+        data from the TSP Route Optimizer, cost estimates from the Cost
+        Estimator, and risk assessments from the Operational Risk Analyst.
+
+        For each region/delivery method route, assess:
+        1. **Efficiency:** Are there unusually long segments that suggest
+           the route could be improved? Does the route make geographic sense?
+        2. **Cost-effectiveness:** Based on cost estimates, which routes
+           have the highest cost per mile or per facility? Are there
+           cheaper alternatives?
+        3. **Operational viability:** Based on risk assessments, which
+           routes face the highest operational risk? Are high-cost routes
+           also high-risk?
+        4. **Recommendations:** Identify routes that might benefit from
+           alternative groupings, delivery methods, or splitting into
+           sub-routes.
+
+        Note: Delivery method assignment and resolution of dual methods
+        was already handled in the regionalization step. Do not reassign
+        delivery methods — focus on route quality assessment.
+
+        Provide a clear assessment for each route with actionable
+        recommendations.""",
+        agent=route_analyzer_agent,
+        context=[tsp_task, cost_estimation_task, operational_risk_task],
+        expected_output="A route-by-route assessment with efficiency, cost, "
+                       "and risk evaluations plus actionable recommendations."
+    )
+
+    # ----- Agent 5: TSP Adjuster -----
+    tsp_adjuster_agent = Agent(
+        role="TSP Route Adjuster",
+        goal="Fix unrealistic or inefficient routes identified by the Route "
+             "Analyzer by modifying route segments in the graph database.",
+        backstory="Expert in route optimization and graph database operations. "
+                  "You take specific recommendations from the Route Analyzer "
+                  "and apply corrections to routes in the graph database. "
+                  "You can remove inefficient segments, insert better "
+                  "connections, and split overly large routes. You must query "
+                  "routes before modifying them to understand the current "
+                  "state, and verify changes after making them. Only modify "
+                  "routes that were flagged as problematic — do not change "
+                  "routes that are working well.",
+        verbose=True,
+        llm=llm,
+        tools=[query_tsp_routes, get_route_summary, query_facility_connections,
+               remove_route_segment, insert_route_segment, split_route]
+    )
+
+    tsp_adjuster_task = Task(
+        description="""Review the Route Analyzer's assessment and fix routes
+        that were flagged as unrealistic, too costly, or ineffective.
+
+        IMPORTANT: Query routes BEFORE modifying them. Verify changes AFTER
+        making them. Only modify routes that were specifically flagged.
+
+        For each flagged route:
+        1. Use query_tsp_routes or get_route_summary to examine the current
+           route state
+        2. Based on the Route Analyzer's recommendation, apply fixes:
+           - For routes that are too long: use split_route to break them
+             into smaller sub-routes
+           - For segments that are inefficient: use remove_route_segment
+             to remove the problematic segment, then insert_route_segment
+             to add a better connection
+           - For routes with geographic issues: restructure segments as
+             needed
+        3. After each modification, use get_route_summary to verify the
+           change improved the route
+
+        Report all changes made and their impact on route distances.""",
+        agent=tsp_adjuster_agent,
+        context=[route_analysis_task],
+        expected_output="A summary of all route modifications made, with "
+                       "before/after distances and verification that changes "
+                       "improved route quality."
+    )
+
+    # ----- Agent 6: Writing Agent -----
     writing_agent = Agent(
         role="Fuel Delivery Analyst and Report Writer",
         goal="Write an engaging report with analysis and actionable "
@@ -900,24 +1058,26 @@ def setup_agents(llm, tsp_results_dict, input_report):
                   "and technical writing. Skilled at synthesizing complex "
                   "information from multiple agents.",
         verbose=True,
-        llm=llm
+        llm=llm,
+        tools=[save_report]
     )
 
     multi_agent_discussion_task = Task(
         description="""Lead a discussion synthesizing findings from the
-        TSP Agent, Cost Estimator, and Operational Risk Agent.
+        TSP Route Optimizer, Route Analyzer, TSP Route Adjuster, Cost
+        Estimator, and Operational Risk Agent.
 
-        * TSP Agent: Route optimization findings, segment analysis
+        * TSP Route Optimizer: Route data from the graph database
+        * Route Analyzer: Route efficiency, cost-effectiveness, and
+          viability assessments with recommendations
+        * TSP Route Adjuster: Route modifications made and their impact
         * Cost Estimator: Cost estimates per segment/route
         * Operational Risk Agent: Risk assessments and alternatives
 
         As moderator:
-        1. Synthesize route optimization, cost, and risk findings
+        1. Synthesize route data, analysis, adjustments, cost, and risk
         2. Identify key trade-offs (cost vs. risk vs. efficiency)
-        3. Ask clarifying questions about:
-           - How do cost and risk interact for different delivery methods?
-           - What are the biggest logistical bottlenecks?
-           - Where can route optimization most reduce costs?
+        3. Evaluate whether route adjustments addressed the concerns
         4. Identify the most important findings for the final report""",
         agent=writing_agent,
         expected_output="A structured summary with key points and insights."
@@ -967,37 +1127,92 @@ def setup_agents(llm, tsp_results_dict, input_report):
         expected_output="Follow-up critiques or confirmation of resolution."
     )
 
+    _regions_list = list(tsp_results_dict.keys())
+    _regions_bullet = "\n    ".join(f"- {r}" for r in _regions_list)
+    _report_desc = (
+        """Produce a comprehensive final report integrating all agent
+        analyses, discussions, and critiques.
+
+        IMPORTANT: You MUST cover ALL of the following regions individually:
+    """ + _regions_bullet + """
+
+        The report should be a single JSON document. Use the save_report
+        tool to save it. The JSON must follow this structure:
+
+        {
+        "title": "Alaska Fuel Delivery TSP Route Optimization Report",
+        "date_generated": \"""" + date.today().isoformat() + """\",
+        "executive_summary": "2-3 paragraphs summarizing key findings across ALL regions",
+        "market_dynamics": "Current market trends, fuel prices, and demand drivers relevant to route optimization",
+        "environmental_concerns": "Climate, weather, and seasonal constraints affecting delivery routes across Alaska",
+        "regional_route_analysis": {
+            "<region_name>": {
+                "optimized_routes": "Description of optimized route paths, distances, and number of facilities",
+                "delivery_methods": "Methods used in this region and rationale",
+                "cost_analysis": "Estimated costs and cost drivers for this region",
+                "risk_assessment": "Key risks and mitigation strategies for this region",
+                "key_findings": "Notable observations for this region"
+            }
+        },
+        "recommendations": {
+            "strategic_priorities": [
+                {"priority": "Name", "description": "Details",
+                 "implementation_steps": ["Step 1", "Step 2"],
+                 "expected_impact": "Outcome"}
+            ],
+            "operational_improvements": [
+                {"improvement": "Name", "description": "Details",
+                 "expected_impact": "Outcome"}
+            ]
+        },
+        "agent_discussion_summary": {
+            "overview": "How the multi-agent discussion shaped the analysis",
+            "key_insights": ["Insight 1", "Insight 2"],
+            "impact_on_recommendations": "How discussion influenced final recommendations"
+        },
+        "limitations": {
+            "contrarian_critique": "Summary of contrarian critique",
+            "response_to_critique": "How concerns were addressed",
+            "acknowledged_limitations": ["Limitation 1"],
+            "areas_for_further_research": ["Area 1"]
+        },
+        "metadata": {
+            "regions_covered": """ + json.dumps(_regions_list) + """,
+            "agents_involved": ["TSP Route Optimizer", "Cost Estimator",
+                "Operational Risk Agent", "Route Analyzer",
+                "Writing Agent", "Contrarian Agent"],
+            "data_sources": ["regionalization.duckdb graph database",
+                "market_cost_analysis_report.json"],
+            "confidence_level": "High/Medium/Low"
+        }
+        }
+
+        You MUST include a separate entry in "regional_route_analysis" for
+        EACH region listed above. Do not skip or combine regions."""
+    )
     writing_task = Task(
-        description="""Produce a comprehensive final report integrating
-        all agent analyses, discussions, and critiques.
-
-        Include:
-        1. An engaging narrative on Alaska fuel delivery routes
-        2. Route analysis with optimization findings
-        3. Cost-risk assessment for each region's routes
-        4. Clear, actionable recommendations
-        5. Agent Discussion Summary
-        6. Limitations (contrarian critique summary)
-
-        ***Return a plain text document, NOT JSON.***""",
+        description=_report_desc,
         agent=writing_agent,
-        expected_output="A comprehensive plain text report with analysis, "
-                       "recommendations, and contrarian review."
+        expected_output="A comprehensive JSON report saved to "
+                       "tsp_final_report.json via the save_report tool."
     )
 
     agents = [tsp_agent, cost_estimator_agent, operational_risk_agent,
-              writing_agent, contrarian_agent]
+              route_analyzer_agent, tsp_adjuster_agent, writing_agent,
+              contrarian_agent]
 
     tasks = [
-        tsp_task,                      # Phase 1: Route analysis
+        tsp_task,                      # Phase 1: Route data retrieval (data-grounded)
         cost_estimation_task,          # Phase 1: Cost estimation
         operational_risk_task,         # Phase 1: Risk assessment
         operational_cost_discussion,   # Phase 2: Cost-risk discussion
-        multi_agent_discussion_task,   # Phase 2: Multi-agent synthesis
-        contrarian_task,               # Phase 3: Contrarian review
-        writing_response_task,         # Phase 3: Writing response
-        contrarian_followup_task,      # Phase 3: Contrarian follow-up
-        writing_task                   # Phase 4: Final report
+        route_analysis_task,           # Phase 2: Route analysis (uses cost + risk)
+        tsp_adjuster_task,             # Phase 3: Fix flagged routes in graph DB
+        multi_agent_discussion_task,   # Phase 4: Multi-agent synthesis
+        contrarian_task,               # Phase 5: Contrarian review
+        writing_response_task,         # Phase 5: Writing response
+        contrarian_followup_task,      # Phase 5: Contrarian follow-up
+        writing_task                   # Phase 6: Final report
     ]
 
     return agents, tasks
@@ -1011,14 +1226,8 @@ def main():
     """Run the TSP model pipeline with DuckDB graph database."""
     global graph_con
 
-    # LLM and API setup
-    with open('.env', 'w', encoding='utf-8') as f:
-        f.write(f"GEMINI_API_KEY={pipeline.get_api_key()}\n")
-        f.write("MODEL=gemini/gemini-2.5-flash-preview-04-17\n")
-
-    load_dotenv()
-    os.environ["GEMINI_API_KEY"] = pipeline.get_api_key()
-    llm = LLM(model='gemini/gemini-2.5-flash')
+    # LLM setup (Ollama)
+    llm = pipeline.get_llm()
 
     # Connect to graph database (read-write for writing routes)
     graph_con = duckdb.connect('regionalization.duckdb')
@@ -1064,7 +1273,7 @@ def main():
     visualize_final_graph(graph_con)
 
     # Convert results for CrewAI
-    tsp_results_dict = convert_results_for_crewai(regional_results)
+    tsp_results_dict = serialize_tours(regional_results)
 
     # Set up agents and tasks
     agents, tasks = setup_agents(llm, tsp_results_dict, input_report)
@@ -1090,9 +1299,10 @@ def main():
     print("=" * 60)
     print(result)
 
-    # Save report
-    with open('tsp_final_report.json', 'w', encoding='utf-8') as f:
-        json.dump({"result": str(result)}, f, indent=4)
+    # Save report (fallback if the agent didn't use the save_report tool)
+    if not os.path.exists('tsp_final_report.json'):
+        with open('tsp_final_report.json', 'w', encoding='utf-8') as f:
+            json.dump({"result": str(result)}, f, indent=4)
 
     # Print final graph state
     print("\nFinal graph database state:")

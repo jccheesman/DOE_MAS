@@ -6,10 +6,17 @@ need to be access by successive runs'''
 
 import pandas as pd
 import os
-import geopandas as gpd 
+import geopandas as gpd
 import json
 import shutil
-from pathlib import Path 
+import subprocess
+import sys
+import time
+import logging
+import urllib.request
+import urllib.error
+from pathlib import Path
+from datetime import datetime
 
 def set_cwd(path):
 	print(os.getcwd())
@@ -38,16 +45,67 @@ def get_shapefile(path):
 	return shapefile
 
 
-def get_api_key():
-	# Get the API key from an environment variable
-	api_key = os.getenv("GEMINI_API_KEY")
-	# Check if the key exists
-	if not api_key:
-	    raise ValueError("GEMINI_API_KEY environment variable not set. "
-	                    "Please set it before running the script."
-	else:
-		print("Gemini API configured successfully.")
-	return api_key
+def get_llm():
+	"""Return a configured LLM instance using Ollama."""
+	from crewai import LLM
+
+	api_base = os.getenv("OLLAMA_API_BASE", "http://localhost:11434")
+	model_name = os.getenv("OLLAMA_MODEL", "llama3.1:70b")
+
+	os.environ["OLLAMA_API_BASE"] = api_base
+
+	model = f"ollama/{model_name}" if not model_name.startswith("ollama/") else model_name
+
+	print(f"LLM configured: {model} at {api_base}")
+	return LLM(
+		model=model,
+		base_url=api_base,
+		timeout=3600,       # 60 min — 70B model can be slow on complex prompts
+		num_retries=3,      # retry on transient connection errors
+	)
+
+
+def check_ollama(max_retries=3, wait_seconds=10):
+    """Verify Ollama is responsive; attempt restart if not."""
+    api_base = os.getenv("OLLAMA_API_BASE", "http://localhost:11434")
+    url = f"{api_base}/api/tags"
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            req = urllib.request.urlopen(url, timeout=15)
+            req.close()
+            print(f"Ollama health check passed (attempt {attempt})")
+            return True
+        except (urllib.error.URLError, OSError) as e:
+            print(f"Ollama health check failed (attempt {attempt}/{max_retries}): {e}")
+            if attempt < max_retries:
+                print("Attempting to restart Ollama...")
+                subprocess.run(["systemctl", "restart", "ollama"], capture_output=True)
+                print(f"Waiting {wait_seconds}s for Ollama to start...")
+                time.sleep(wait_seconds)
+
+    raise ConnectionError(
+        f"Ollama is not responding at {api_base} after {max_retries} attempts. "
+        "Check that the Ollama service is running."
+    )
+
+
+def setup_logging(log_dir="outputs"):
+    """Configure logging to both console and a timestamped log file."""
+    os.makedirs(log_dir, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_file = os.path.join(log_dir, f"pipeline_{timestamp}.log")
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        handlers=[
+            logging.FileHandler(log_file),
+            logging.StreamHandler(sys.stdout),
+        ],
+    )
+    print(f"Logging to: {log_file}")
+    return log_file
 
 
 def save_json(source_folder=".", output_folder_name="outputs", pattern="*.json"):
