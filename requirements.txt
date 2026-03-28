@@ -5,3 +5,8 @@ crewai== 1.4.1
 json==2.0.9
 duckdb>=1.1.3,<=1.3.1
 networkx>=3.2
+whitebox>=2.3.0
+rasterio>=1.3.0
+earthengine-api>=0.1.390
+pyproj>=3.6.0
+numpy>=1.24.0

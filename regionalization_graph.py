@@ -150,7 +150,9 @@ def init_duckdb_graph():
             longitude DOUBLE,
             latitude DOUBLE,
             delivery_method VARCHAR,
-            community_name VARCHAR
+            community_name VARCHAR,
+            x_3413 DOUBLE,
+            y_3413 DOUBLE
         )
     """)
 
@@ -198,6 +200,18 @@ def init_duckdb_graph():
             src INTEGER REFERENCES facilities(facility_id),
             dst INTEGER REFERENCES facilities(facility_id),
             distance_miles DOUBLE,
+            avg_friction DOUBLE,
+            max_friction DOUBLE,
+            path_length_miles DOUBLE,
+            friction_summer DOUBLE,
+            friction_shoulder DOUBLE,
+            friction_winter DOUBLE,
+            delivery_cost DOUBLE,
+            cost_summer DOUBLE,
+            cost_shoulder DOUBLE,
+            cost_winter DOUBLE,
+            cost_fwd DOUBLE,
+            cost_rev DOUBLE,
             PRIMARY KEY (src, dst)
         )
     """)

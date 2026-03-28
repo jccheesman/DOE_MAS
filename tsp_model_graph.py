@@ -71,8 +71,14 @@ Link = Tuple[City, City]
 Segment = list
 
 # ===========================================================================
-# Core TSP Algorithm Functions (all unchanged from original tsp_model.py)
+# Core TSP Algorithm Functions
 # ===========================================================================
+
+# Friction-weighted distance lookup populated before TSP runs.
+# Maps (City, City) -> friction-based cost.  Falls back to Haversine
+# when no friction data is available for an edge.
+_friction_weights: Dict[Tuple[City, City], float] = {}
+
 
 def distance(A: City, B: City) -> float:
     """Distance between two cities in miles using the Haversine formula.
@@ -96,14 +102,29 @@ def distance(A: City, B: City) -> float:
     return R * c
 
 
+def weighted_distance(A: City, B: City) -> float:
+    """Friction-weighted distance between two cities.
+
+    Uses friction-based delivery cost from the graph database if available,
+    falling back to Haversine distance when no friction data exists.
+    """
+    key = (A, B)
+    if key in _friction_weights:
+        return _friction_weights[key]
+    key_rev = (B, A)
+    if key_rev in _friction_weights:
+        return _friction_weights[key_rev]
+    return distance(A, B)
+
+
 def shortest(tours: Iterable[Tour]) -> Tour:
     "The tour with the smallest tour length."
     return min(tours, key=tour_length)
 
 
 def tour_length(tour: Tour) -> float:
-    "The total distance of each link in the tour, including last to first."
-    return sum(distance(tour[i], tour[i - 1]) for i in range(len(tour)))
+    "The total of weighted distance for each link in the tour, including last to first."
+    return sum(weighted_distance(tour[i], tour[i - 1]) for i in range(len(tour)))
 
 
 def valid_tour(tour: Tour, cities: Cities) -> bool:
@@ -113,8 +134,8 @@ def valid_tour(tour: Tour, cities: Cities) -> bool:
 
 
 def nearest_neighbor(A: City, cities) -> City:
-    "Find the city C in cities that is nearest to city A."
-    return min(cities, key=lambda C: distance(C, A))
+    "Find the city C in cities that is nearest to city A (using weighted distance)."
+    return min(cities, key=lambda C: weighted_distance(C, A))
 
 
 def nearest_tsp(cities, start=None) -> Tour:
@@ -155,7 +176,8 @@ def opt2(tour) -> Tour:
 def reversal_is_improvement(tour, i, j) -> bool:
     "Would reversing the segment `tour[i:j]` make the tour shorter?"
     A, B, C, D = tour[i - 1], tour[i], tour[j - 1], tour[j % len(tour)]
-    return distance(A, B) + distance(C, D) > distance(A, C) + distance(B, D)
+    return (weighted_distance(A, B) + weighted_distance(C, D) >
+            weighted_distance(A, C) + weighted_distance(B, D))
 
 
 cache = functools.lru_cache(None)
@@ -183,7 +205,7 @@ def greedy_tsp(cities):
     "Go through links, shortest first. If a link can join segments, do it."
     endpoints = {C: [C] for C in cities}
     links = itertools.combinations(cities, 2)
-    for (A, B) in sorted(links, key=lambda link: distance(*link)):
+    for (A, B) in sorted(links, key=lambda link: weighted_distance(*link)):
         if A in endpoints and B in endpoints and endpoints[A] != endpoints[B]:
             joined_segment = join_segments(endpoints, A, B)
             if len(joined_segment) == len(cities):
@@ -280,6 +302,48 @@ def get_regional_cities(con):
     return groups, facility_maps
 
 
+def _load_friction_weights(con, facility_maps):
+    """Populate the global _friction_weights lookup from connects_to edges.
+
+    Maps (City, City) pairs to their friction-based delivery_cost.  Falls
+    back to avg_friction * path_length_miles when delivery_cost is NULL.
+    """
+    global _friction_weights
+    _friction_weights.clear()
+
+    # Build reverse map: facility_id -> City (complex)
+    fid_to_city = {}
+    for (region, method), city_map in facility_maps.items():
+        for city, fid in city_map.items():
+            fid_to_city[fid] = city
+
+    rows = con.execute("""
+        SELECT src, dst, delivery_cost, avg_friction, path_length_miles
+        FROM connects_to
+        WHERE avg_friction IS NOT NULL
+    """).fetchall()
+
+    loaded = 0
+    for src, dst, cost, avg_f, path_mi in rows:
+        src_city = fid_to_city.get(src)
+        dst_city = fid_to_city.get(dst)
+        if src_city is None or dst_city is None:
+            continue
+
+        # Prefer delivery_cost; fall back to friction * path length
+        if cost is not None and cost < 999:
+            weight = cost
+        elif avg_f is not None and path_mi is not None:
+            weight = avg_f * path_mi
+        else:
+            continue
+
+        _friction_weights[(src_city, dst_city)] = weight
+        loaded += 1
+
+    print(f"  Loaded {loaded} friction-weighted edges for TSP")
+
+
 def run_regional_tsp(con, tsp_algo=greedy_tsp, optimize=True):
     """Run TSP for each region/delivery method group from the graph DB.
 
@@ -294,6 +358,10 @@ def run_regional_tsp(con, tsp_algo=greedy_tsp, optimize=True):
         facility_maps: dict mapping (region, method) -> {complex: facility_id}
     """
     groups, facility_maps = get_regional_cities(con)
+
+    # Load friction-based weights if available
+    _load_friction_weights(con, facility_maps)
+
     results = {}
 
     for (region, method), cities in groups.items():

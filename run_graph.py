@@ -5,7 +5,9 @@ Orchestration script for the DuckDB graph-based MAS pipeline.
 This replaces run.py and calls the new graph-integrated modules:
 1. regionalization_graph.py  - Creates regionalization.duckdb graph database
 2. market_cost_analysis.py   - Market & cost analysis using graph DB
-3. tsp_model_graph.py        - TSP route optimization using graph DB
+3. friction_surface.py       - Friction raster computation (no LLM)
+4. friction_agents.py        - Seasonal, cost, and validation agents
+5. tsp_model_graph.py        - TSP route optimization using graph DB
 
 All modules share the same DuckDB database file (regionalization.duckdb).
 """
@@ -16,6 +18,8 @@ import sys
 from pathlib import Path
 import regionalization_graph
 import market_cost_analysis
+import friction_surface
+import friction_agents
 import tsp_model_graph
 import pipeline
 
@@ -60,6 +64,15 @@ def run_step(step_name, step_func):
     save_checkpoint(step_name)
 
 
+def run_compute_step(step_name, step_func):
+    """Run a compute-only step (no LLM required)."""
+    if not should_run(step_name):
+        return
+
+    step_func()
+    save_checkpoint(step_name)
+
+
 if __name__ == "__main__":
     os.makedirs("outputs", exist_ok=True)
 
@@ -94,15 +107,27 @@ if __name__ == "__main__":
     print("=" * 60)
     run_step("market_cost_analysis", market_cost_analysis.main)
 
-    # Step 3: TSP Route Optimization - reads & writes to graph DB
+    # Step 3: Friction Surface Computation - pure computation, no LLM
     print("\n" + "=" * 60)
-    print("STEP 3: TSP Route Optimization")
+    print("STEP 3: Friction Surface Computation")
+    print("=" * 60)
+    run_compute_step("friction_surface", friction_surface.main)
+
+    # Step 4: Friction Agents - seasonal, cost, and validation via CrewAI
+    print("\n" + "=" * 60)
+    print("STEP 4: Friction Agents (Seasonal, Cost, Validation)")
+    print("=" * 60)
+    run_step("friction_agents", friction_agents.main)
+
+    # Step 5: TSP Route Optimization - reads & writes to graph DB
+    print("\n" + "=" * 60)
+    print("STEP 5: TSP Route Optimization")
     print("=" * 60)
     run_step("tsp_optimization", tsp_model_graph.main)
 
-    # Step 4: Copy JSON outputs to outputs folder
+    # Step 6: Copy JSON outputs to outputs folder
     print("\n" + "=" * 60)
-    print("STEP 4: Saving outputs")
+    print("STEP 6: Saving outputs")
     print("=" * 60)
     pipeline.save_json()
 

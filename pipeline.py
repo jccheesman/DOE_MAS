@@ -153,3 +153,53 @@ def get_duckdb_connection(db_path='regionalization.duckdb', read_only=False):
     import duckdb
     return duckdb.connect(db_path, read_only=read_only)
 
+
+# ---------------------------------------------------------------------------
+# Friction surface helpers
+# ---------------------------------------------------------------------------
+
+def get_raster_dir():
+    """Return the path to the GEE raster directory."""
+    return os.getenv("RASTER_DIR", "./rasters")
+
+
+def get_vector_dir():
+    """Return the path to the vector data directory."""
+    return os.getenv("VECTOR_DIR", "./vectors")
+
+
+def get_whitebox_wbt():
+    """Return a configured WhiteboxTools instance."""
+    from whitebox import WhiteboxTools
+    wbt = WhiteboxTools()
+    wbt.set_verbose_mode(False)
+    work_dir = os.path.join(get_raster_dir(), "wbt_work")
+    os.makedirs(work_dir, exist_ok=True)
+    wbt.set_working_dir(work_dir)
+    return wbt
+
+
+def reproject_facilities(con):
+    """Reproject facility lon/lat to EPSG:3413 and update the facilities table.
+
+    Reads facilities from DuckDB, projects WGS84 coordinates to polar
+    stereographic, and writes x_3413 / y_3413 back to the table.
+
+    Args:
+        con: DuckDB connection (read-write)
+    """
+    from pyproj import Transformer
+
+    transformer = Transformer.from_crs("EPSG:4326", "EPSG:3413", always_xy=True)
+
+    rows = con.execute(
+        "SELECT facility_id, longitude, latitude FROM facilities"
+    ).fetchall()
+
+    for fid, lon, lat in rows:
+        x, y = transformer.transform(lon, lat)
+        con.execute(
+            "UPDATE facilities SET x_3413 = ?, y_3413 = ? WHERE facility_id = ?",
+            [x, y, fid],
+        )
+
