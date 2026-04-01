@@ -499,7 +499,11 @@ def setup_agents(llm):
         description=(
             "Execute the friction surface computation pipeline:\n\n"
             "1. Use the run_friction_computation tool. It builds three "
-            "composite friction rasters using this methodology:\n"
+            "separate friction rasters:\n"
+            "   - friction_road.tif: for Road delivery (land traversal)\n"
+            "   - friction_barge.tif: for Barge delivery (water navigation)\n"
+            "   - friction_sky.tif: for Plane delivery (airspace clearance)\n"
+            "   The methodology for assembling these rasters:\n"
             "   a) Reclassify slope into friction: flat (<2°)=1.0, "
             "rolling (2-8°)=1.4, mountain (>8°)=1.75.\n"
             "   b) Combine Dynamic World land cover with Obu et al. "
