@@ -9,8 +9,8 @@ data and writes computed routes back to the graph as edges.
 
 Agents:
     - TSP Route Optimizer: Queries graph DB for computed route data
-    - Cost Estimator: Assigns cost values to route segments
-    - Operational Risk Agent: Assesses segment risks
+    - Operational Risk Agent: Assesses segment risks using friction-based
+      costs and terrain data from the graph database
     - Route Analyzer: Assesses route quality using cost + risk inputs
     - TSP Route Adjuster: Fixes flagged routes in the graph database
     - Writing Agent: Synthesizes findings into a report
@@ -793,6 +793,46 @@ def get_route_summary() -> str:
     }, indent=2)
 
 
+@tool("query_friction_costs")
+def query_friction_costs() -> str:
+    """Query friction-based delivery costs and terrain data from the graph
+    database.  Returns cost, friction, and path data for all connects_to
+    edges, grouped by region and delivery method.
+
+    Data comes from the friction surface computation pipeline which
+    computed least-cost paths through real terrain (slope, land cover,
+    permafrost, road networks, rivers).
+    """
+    global graph_con
+    result = graph_con.execute("""
+        SELECT
+            li.region_name AS region,
+            COALESCE(um.method_name, 'Unknown') AS delivery_method,
+            COUNT(*) AS edge_count,
+            ROUND(AVG(ct.avg_friction), 3) AS mean_friction,
+            ROUND(MAX(ct.avg_friction), 3) AS max_friction,
+            ROUND(AVG(ct.path_length_miles), 1) AS mean_path_miles,
+            ROUND(AVG(ct.distance_miles), 1) AS mean_haversine_miles,
+            ROUND(AVG(ct.delivery_cost), 2) AS mean_delivery_cost,
+            ROUND(MIN(ct.delivery_cost), 2) AS min_delivery_cost,
+            ROUND(MAX(ct.delivery_cost), 2) AS max_delivery_cost,
+            ROUND(AVG(ct.cost_summer), 2) AS mean_cost_summer,
+            ROUND(AVG(ct.cost_shoulder), 2) AS mean_cost_shoulder,
+            ROUND(AVG(ct.cost_winter), 2) AS mean_cost_winter,
+            SUM(CASE WHEN ct.friction_winter >= 999 THEN 1 ELSE 0 END)
+                AS winter_impassable_count
+        FROM connects_to ct
+        JOIN facilities f ON ct.src = f.facility_id
+        JOIN located_in li ON f.facility_id = li.facility_id
+        LEFT JOIN uses_method um ON f.facility_id = um.facility_id
+        WHERE ct.avg_friction IS NOT NULL
+        GROUP BY li.region_name, um.method_name
+        ORDER BY li.region_name, um.method_name
+    """).fetchdf()
+
+    return result.to_json(orient='records', indent=2)
+
+
 @tool("save_report")
 def save_report(json_report: str) -> str:
     """Save the final TSP analysis report as JSON.
@@ -948,58 +988,47 @@ def setup_agents(llm, tsp_results_dict, input_report):
                        "from the graph database."
     )
 
-    # ----- Agent 2: Cost Estimator -----
-    cost_estimator_agent = Agent(
-        role="Cost Estimator Agent",
-        goal="Assign cost values to each segment of each route based on "
-             "distance, delivery method, and operational factors.",
-        backstory="Energy delivery cost specialist in Alaska with expertise "
-                  "in fuel transportation economics.",
-        verbose=True,
-        llm=llm
-    )
-
-    cost_estimation_task = Task(
-        description="""Estimate the cost for each delivery segment from the
-        TSP route data.
-
-        Consider these factors:
-        - **Distance:** Longer segments cost more. Use distances from routes.
-        - **Delivery Method:** Cost per mile varies significantly:
-          - Road: ~$2-5/mile (fuel truck)
-          - Barge: ~$1-3/mile (but seasonal, bulk quantities)
-          - Plane: ~$8-15/mile (small aircraft, limited cargo)
-        - **Fuel Price:** Current Alaska fuel prices as baseline
-        - **Operational Costs:** Labor, maintenance, infrastructure per method
-
-        Provide cost estimates per segment and per route. Present in a
-        structured format usable by other agents.""",
-        agent=cost_estimator_agent,
-        context=[tsp_task],
-        expected_output="A structured list of segments with estimated costs."
-    )
-
-    # ----- Agent 3: Operational Risk Agent -----
+    # ----- Agent 2: Operational Risk Agent -----
     operational_risk_agent = Agent(
         role="Operational Risk Analyst",
-        goal="Analyze fuel delivery segment risks by region considering "
-             "weather, delivery method, and cost factors.",
+        goal="Analyze fuel delivery segment risks by region using friction-"
+             "based costs and terrain data from the graph database, combined "
+             "with the market cost analysis report.",
         backstory="Expert in logistics risk assessment with deep knowledge "
-                  "of Arctic operations and supply chain vulnerabilities.",
+                  "of Arctic operations and supply chain vulnerabilities. "
+                  "You ground your analysis in real delivery cost data "
+                  "computed from terrain friction surfaces (slope, land cover, "
+                  "permafrost, road networks, rivers) stored in the graph "
+                  "database.",
         verbose=True,
-        llm=llm
+        llm=llm,
+        tools=[query_friction_costs],
     )
 
     operational_risk_task = Task(
         description=f"""Assess the risk for each fuel delivery segment.
-        Use the TSP Agent's route analysis and Cost Estimator's cost data.
-        Reference the market analysis: {str(input_report)}
 
-        For each segment/route, evaluate:
+        Use the query_friction_costs tool to retrieve friction-based delivery
+        costs and terrain data from the graph database. These costs were
+        computed from real terrain data (slope, land cover, permafrost, road
+        networks, rivers) using least-cost path analysis.
+
+        Also reference the market analysis: {str(input_report)}
+
+        For each region/delivery method, evaluate:
+        - **Terrain difficulty:** Use avg_friction and max_friction from the
+          graph. Higher friction = harder terrain (steep slopes, permafrost,
+          poor road surface). Values near 1.0 are ideal; above 2.0 is
+          challenging.
+        - **Seasonal accessibility:** Check cost_summer vs cost_shoulder vs
+          cost_winter. Routes with winter_impassable_count > 0 are shut down
+          in winter (frozen rivers/sea ice for barge routes).
         - **Weather:** Storm, ice, fog impact on segment feasibility
-        - **Delivery Method:** Inherent risks (road conditions, ice for
-          barges, visibility for air)
-        - **Cost:** High cost segments may indicate challenging routes
+        - **Delivery method risks:** Road conditions (permafrost damage),
+          ice for barges (seasonal), visibility for air
+        - **Cost indicators:** High delivery_cost relative to path_length
+          indicates difficult terrain. Compare mean_delivery_cost across
+          methods within a region.
 
         Classify each route into risk categories:
         - High risk: Significant potential for delays/failure
@@ -1009,61 +1038,60 @@ def setup_agents(llm, tsp_results_dict, input_report):
         Suggest alternatives for high-risk segments.""",
         agent=operational_risk_agent,
         context=[tsp_task],
-        expected_output="A detailed risk analysis for each route/segment."
+        expected_output="A detailed risk analysis for each route/segment, "
+                       "grounded in friction-based terrain and cost data."
     )
 
-    # Discussion between Risk and Cost agents
-    operational_cost_discussion = Task(
-        description="""Review cost estimates and factor them into risk
-        assessment. Adjust costs based on operational risk. For routes
-        with dual delivery methods (e.g., 'Plane or Road'), select the
-        optimal method based on cost-risk balance.""",
-        agent=operational_risk_agent,
-        expected_output="An informed cost-risk assessment for each route."
-    )
-
-    # ----- Agent 4: Route Analyzer -----
+    # ----- Agent 3: Route Analyzer -----
     route_analyzer_agent = Agent(
         role="Route Analyzer",
         goal="Assess whether computed delivery routes are practical, "
              "cost-effective, and operationally sound by synthesizing "
-             "route data, cost estimates, and risk assessments.",
+             "route data, friction-based costs from the graph database, "
+             "and risk assessments.",
         backstory="Expert in logistics network analysis with deep knowledge "
                   "of Alaska's geography and fuel delivery constraints. "
                   "You evaluate route quality by combining route data with "
-                  "cost and risk inputs from other agents. You identify "
-                  "routes that are too long, too costly, or ineffective "
-                  "and recommend improvements.",
+                  "friction-based delivery costs and terrain data stored in "
+                  "the graph database. You identify routes that are too "
+                  "long, too costly, or ineffective and recommend improvements.",
         verbose=True,
-        llm=llm
+        llm=llm,
+        tools=[query_friction_costs],
     )
 
     route_analysis_task = Task(
-        description="""Analyze the computed delivery routes using the route
-        data from the TSP Route Optimizer, cost estimates from the Cost
-        Estimator, and risk assessments from the Operational Risk Analyst.
+        description="""Analyze the computed delivery routes using:
+        - Route data from the TSP Route Optimizer
+        - Friction-based delivery costs from the graph database (use the
+          query_friction_costs tool)
+        - Risk assessments from the Operational Risk Analyst
+
+        The friction costs were computed from real terrain: least-cost paths
+        through slope, land cover, permafrost, road networks, and rivers.
+        Higher avg_friction means harder terrain. The delivery_cost field
+        is WAF × path_length_miles × baseline rate per delivery method.
 
         For each region/delivery method route, assess:
-        1. **Efficiency:** Are there unusually long segments that suggest
-           the route could be improved? Does the route make geographic sense?
-        2. **Cost-effectiveness:** Based on cost estimates, which routes
-           have the highest cost per mile or per facility? Are there
-           cheaper alternatives?
-        3. **Operational viability:** Based on risk assessments, which
-           routes face the highest operational risk? Are high-cost routes
-           also high-risk?
-        4. **Recommendations:** Identify routes that might benefit from
-           alternative groupings, delivery methods, or splitting into
-           sub-routes.
+        1. **Efficiency:** Are there unusually long segments? Compare
+           path_length_miles (friction path) to distance_miles (Haversine).
+           High detour ratios indicate terrain forcing long diversions.
+        2. **Cost-effectiveness:** Which routes have the highest
+           mean_delivery_cost? Compare costs across methods within a region.
+        3. **Seasonal viability:** Check winter_impassable_count — routes
+           with many impassable winter edges need alternative seasonal plans.
+        4. **Operational viability:** Cross-reference with risk assessments.
+           Are high-cost routes also high-risk?
+        5. **Recommendations:** Identify routes that might benefit from
+           splitting into sub-routes or alternative groupings.
 
-        Note: Delivery method assignment and resolution of dual methods
-        was already handled in the regionalization step. Do not reassign
-        delivery methods — focus on route quality assessment.
+        Note: Delivery method assignment was handled in regionalization.
+        Do not reassign delivery methods — focus on route quality.
 
         Provide a clear assessment for each route with actionable
         recommendations.""",
         agent=route_analyzer_agent,
-        context=[tsp_task, cost_estimation_task, operational_risk_task],
+        context=[tsp_task, operational_risk_task],
         expected_output="A route-by-route assessment with efficiency, cost, "
                        "and risk evaluations plus actionable recommendations."
     )
@@ -1132,18 +1160,22 @@ def setup_agents(llm, tsp_results_dict, input_report):
 
     multi_agent_discussion_task = Task(
         description="""Lead a discussion synthesizing findings from the
-        TSP Route Optimizer, Route Analyzer, TSP Route Adjuster, Cost
-        Estimator, and Operational Risk Agent.
+        TSP Route Optimizer, Route Analyzer, TSP Route Adjuster, and
+        Operational Risk Agent.
 
         * TSP Route Optimizer: Route data from the graph database
         * Route Analyzer: Route efficiency, cost-effectiveness, and
           viability assessments with recommendations
         * TSP Route Adjuster: Route modifications made and their impact
-        * Cost Estimator: Cost estimates per segment/route
-        * Operational Risk Agent: Risk assessments and alternatives
+        * Operational Risk Agent: Risk assessments grounded in friction-
+          based terrain and cost data from the graph database
+
+        Note: Delivery costs are computed from the friction surface
+        pipeline (terrain-aware least-cost paths) and stored directly
+        in the graph database — not estimated by an LLM agent.
 
         As moderator:
-        1. Synthesize route data, analysis, adjustments, cost, and risk
+        1. Synthesize route data, analysis, adjustments, and risk
         2. Identify key trade-offs (cost vs. risk vs. efficiency)
         3. Evaluate whether route adjustments addressed the concerns
         4. Identify the most important findings for the final report""",
@@ -1246,11 +1278,12 @@ def setup_agents(llm, tsp_results_dict, input_report):
         },
         "metadata": {
             "regions_covered": """ + json.dumps(_regions_list) + """,
-            "agents_involved": ["TSP Route Optimizer", "Cost Estimator",
+            "agents_involved": ["TSP Route Optimizer",
                 "Operational Risk Agent", "Route Analyzer",
                 "Writing Agent", "Contrarian Agent"],
             "data_sources": ["regionalization.duckdb graph database",
-                "market_cost_analysis_report.json"],
+                "market_cost_analysis_report.json",
+                "friction_analysis_report.json"],
             "confidence_level": "High/Medium/Low"
         }
         }
@@ -1265,16 +1298,13 @@ def setup_agents(llm, tsp_results_dict, input_report):
                        "tsp_final_report.json via the save_report tool."
     )
 
-    agents = [tsp_agent, cost_estimator_agent, operational_risk_agent,
-              route_analyzer_agent, tsp_adjuster_agent, writing_agent,
-              contrarian_agent]
+    agents = [tsp_agent, operational_risk_agent, route_analyzer_agent,
+              tsp_adjuster_agent, writing_agent, contrarian_agent]
 
     tasks = [
         tsp_task,                      # Phase 1: Route data retrieval (data-grounded)
-        cost_estimation_task,          # Phase 1: Cost estimation
-        operational_risk_task,         # Phase 1: Risk assessment
-        operational_cost_discussion,   # Phase 2: Cost-risk discussion
-        route_analysis_task,           # Phase 2: Route analysis (uses cost + risk)
+        operational_risk_task,         # Phase 1: Risk assessment (uses friction costs from graph)
+        route_analysis_task,           # Phase 2: Route analysis (uses friction costs + risk)
         tsp_adjuster_task,             # Phase 3: Fix flagged routes in graph DB
         multi_agent_discussion_task,   # Phase 4: Multi-agent synthesis
         contrarian_task,               # Phase 5: Contrarian review
