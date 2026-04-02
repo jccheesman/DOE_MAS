@@ -47,13 +47,13 @@ from typing_extensions import final
 import pipeline
 
 #Setting Working Directory
-pipeline.set_cwd('/media/volume/Preliminary_mas_runs')
+pipeline.set_cwd('/media/volume/GraphDB_Runs')
 
 #@title Retrieving Data
 bulk_fuel_data = pd.read_csv('Utilities_Bulk_Fuel_Inventory.csv', usecols =['ASTFacilityID','ASTFacilityLongitude', 'ASTFacilityLatitude']) # Bulk fuel facility sites
-regional_data = gpd.read_file('Alaska_Energy_Authority_Library/Alaska_Energy_Authority_Library.shp') #Regional Data
+regional_data = gpd.read_file('Alaska_Energy_Authority_Library.shp') #Regional Data
 bulk_fuel_csv_path = 'Utilities_Bulk_Fuel_Inventory.csv'
-shapefile_path = 'Alaska_Energy_Authority_Library/Alaska_Energy_Authority_Library.shp'
+shapefile_path = 'Alaska_Energy_Authority_Library.shp'
 
 # globals
 global final_regionalized_dict

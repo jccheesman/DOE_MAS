@@ -53,7 +53,7 @@ import pipeline
 # ---------------------------------------------------------------------------
 # Working directory
 # ---------------------------------------------------------------------------
-pipeline.set_cwd('/media/volume/Preliminary_mas_runs')
+pipeline.set_cwd('/media/volume/GraphDB_Runs')
 
 # ---------------------------------------------------------------------------
 # Globals

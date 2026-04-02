@@ -53,7 +53,7 @@ import pipeline
 
 
 #Setting Working Directory
-pipeline.set_cwd('/media/volume/Preliminary_mas_runs')
+pipeline.set_cwd('/media/volume/GraphDB_Runs')
 
 #@title Set globals & Retrieving Data
 global input_dict

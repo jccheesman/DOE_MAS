@@ -52,7 +52,7 @@ import pydantic
 
 
 #Setting Working Directory
-pipeline.set_cwd('/media/volume/Preliminary_mas_runs')
+pipeline.set_cwd('/media/volume/GraphDB_Runs')
 
 #Set up Agents
 def setup_agents(llm, input_data, input_report):

@@ -42,7 +42,7 @@ import friction_config
 # ---------------------------------------------------------------------------
 # Working directory
 # ---------------------------------------------------------------------------
-pipeline.set_cwd('/media/volume/Preliminary_mas_runs')
+pipeline.set_cwd('/media/volume/GraphDB_Runs')
 
 # ---------------------------------------------------------------------------
 # DuckDB Graph Database Connection

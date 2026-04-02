@@ -47,7 +47,7 @@ from crewai.tools import tool
 import pipeline
 
 # Setting Working Directory
-pipeline.set_cwd('/media/volume/Preliminary_mas_runs')
+pipeline.set_cwd('/media/volume/GraphDB_Runs')
 
 # Retrieving Data
 bulk_fuel_data = pd.read_csv(
@@ -55,10 +55,10 @@ bulk_fuel_data = pd.read_csv(
     usecols=['ASTFacilityID', 'ASTFacilityLongitude', 'ASTFacilityLatitude']
 )
 regional_data = gpd.read_file(
-    'Alaska_Energy_Authority_Library/Alaska_Energy_Authority_Library.shp'
+    'Alaska_Energy_Authority_Library.shp'
 )
 bulk_fuel_csv_path = 'Utilities_Bulk_Fuel_Inventory.csv'
-shapefile_path = 'Alaska_Energy_Authority_Library/Alaska_Energy_Authority_Library.shp'
+shapefile_path = 'Alaska_Energy_Authority_Library.shp'
 
 # Globals
 global final_regionalized_dict
