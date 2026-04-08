@@ -106,14 +106,14 @@ PERMAFROST_LULC_MATRIX = {
 }
 
 # ---------------------------------------------------------------------------
-# Road surface type friction (AK DOT + USGS NTD classification)
 # ---------------------------------------------------------------------------
-# Rasterized road type values in roads_type_alaska.tif
-ROAD_TYPE_FRICTION = {
-    1: 1.0,   # paved
-    2: 1.1,   # gravel
-    3: 1.6,   # dirt
-}
+# Road presence friction (GRIP4 binary)
+# ---------------------------------------------------------------------------
+# Friction value applied wherever a GRIP4 road is present.
+# Was previously a paved/gravel/dirt lookup from AK DOT data, but the
+# AK DOT surface type data was unreliable, so we treat all roads
+# uniformly as ideal traversal (1.0).
+ROAD_PRESENT_FRICTION = 1.0
 
 # ---------------------------------------------------------------------------
 # River friction
@@ -224,7 +224,6 @@ RASTER_FILES = {
     "slope":             os.path.join(RASTER_DIR, "slope_alaska.tif"),
     "permafrost":        os.path.join(RASTER_DIR, "permafrost_alaska.tif"),
     "roads_presence":    os.path.join(RASTER_DIR, "roads_presence_alaska.tif"),
-    "roads_type":        os.path.join(RASTER_DIR, "roads_type_alaska.tif"),
     "rivers":            os.path.join(RASTER_DIR, "rivers_alaska.tif"),
     "dem":               os.path.join(RASTER_DIR, "dem_alaska.tif"),
 }

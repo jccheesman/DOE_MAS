@@ -168,7 +168,8 @@ def build_friction_road(rasters):
 
     Logic:
         a. Start with max(slope_friction, lulc_permafrost_friction) per pixel.
-        b. Where roads exist, override with road-type friction.
+        b. Where roads exist (GRIP4 binary presence), override with the
+           uniform ROAD_PRESENT_FRICTION value.
         c. Where rivers exist, set to IMPASSABLE.
         d. Where LULC is water (class 0), set to IMPASSABLE.
 
@@ -182,7 +183,6 @@ def build_friction_road(rasters):
     lulc_arr = rasters["lulc"][0]
     pf_arr = rasters["permafrost"][0]
     roads_pres = rasters["roads_presence"][0]
-    roads_type = rasters["roads_type"][0]
     rivers = rasters["rivers"][0]
 
     slope_friction = classify_slope(slope_arr)
@@ -193,11 +193,9 @@ def build_friction_road(rasters):
     slope_clean = np.where(slope_friction == -9999, 0.0, slope_friction)
     base = np.maximum(slope_clean, lulc_pf_friction)
 
-    # (b) override where roads are present
+    # (b) override where roads are present (uniform friction value)
     road_mask = (roads_pres.astype(int) == fc.GRIP4_ROAD_PRESENT)
-    for rtype, rfric in fc.ROAD_TYPE_FRICTION.items():
-        type_mask = road_mask & (roads_type.astype(int) == rtype)
-        base[type_mask] = rfric
+    base[road_mask] = fc.ROAD_PRESENT_FRICTION
 
     # (c) rivers -> impassable for road
     for rclass in fc.RIVER_FRICTION_ROAD:
