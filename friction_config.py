@@ -118,15 +118,14 @@ ROAD_PRESENT_FRICTION = 1.0
 # ---------------------------------------------------------------------------
 # River friction
 # ---------------------------------------------------------------------------
-# Rasterized river classes in rivers_alaska.tif (1=major, 2=minor)
+# Rasterized waterway classes in rivers_alaska.tif (1=navigable)
+# All USACE NWN features are treated as navigable; no minor class.
 RIVER_FRICTION_ROAD = {
-    1: IMPASSABLE,  # major river -- impassable for road
-    2: IMPASSABLE,  # minor river -- impassable for road
+    1: IMPASSABLE,  # navigable waterway -- impassable for road
 }
 
 RIVER_FRICTION_BARGE = {
-    1: 1.0,   # major navigable river
-    2: 1.5,   # minor river
+    1: 1.0,   # navigable waterway (all NWN features)
 }
 
 # ---------------------------------------------------------------------------
@@ -173,15 +172,10 @@ LULC_FRICTION_BARGE[0] = 1.0  # water is navigable
 SEASONS = ["summer", "shoulder", "winter"]
 
 SEASONAL_MULTIPLIERS = {
-    # Major river navigability
+    # Navigable waterway (USACE NWN) navigability
     ("major_river", "summer"):   1.0,
     ("major_river", "shoulder"): 1.3,
     ("major_river", "winter"):   IMPASSABLE,
-
-    # Minor river navigability
-    ("minor_river", "summer"):   1.0,
-    ("minor_river", "shoulder"): 1.5,
-    ("minor_river", "winter"):   IMPASSABLE,
 
     # Sea ice (coastal / ocean routes)
     ("sea_ice", "summer"):       1.0,
