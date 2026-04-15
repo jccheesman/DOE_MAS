@@ -1,11 +1,9 @@
 # -*- coding: utf-8 -*-
 """tsp_model_graph.py
 
-DuckDB Graph Database version of the TSP model module.
-
-This module replaces tsp_model.py. Instead of reading nested JSON
-dictionaries, it queries the shared DuckDB graph database for facility
-data and writes computed routes back to the graph as edges.
+DuckDB Graph Database version of the TSP model module. Queries the
+shared DuckDB graph database for facility data and writes computed
+routes back to the graph as edges.
 
 Agents:
     - TSP Route Optimizer: Queries graph DB for computed route data
@@ -932,11 +930,14 @@ def split_route(route_id: int, split_after_sequence: int) -> str:
 # Agent & Task Setup
 # ===========================================================================
 
-def setup_agents(llm, tsp_results_dict, input_report):
+def setup_agents(llm_haiku, llm_sonnet, tsp_results_dict, input_report):
     """Create all agents and tasks for the TSP analysis.
 
     Args:
-        llm: CrewAI LLM instance
+        llm_haiku:  CrewAI LLM instance for fast/cheap agents
+                    (TSP Route Optimizer, Operational Risk).
+        llm_sonnet: CrewAI LLM instance for reasoning/writing agents
+                    (Route Analyzer, TSP Route Adjuster, Writer, Contrarian).
         tsp_results_dict: Converted TSP results for agent context
         input_report: Market & cost analysis report JSON
 
@@ -957,7 +958,7 @@ def setup_agents(llm, tsp_results_dict, input_report):
                   "distances, or facility information — only report what "
                   "the tools return.",
         verbose=True,
-        llm=llm,
+        llm=llm_haiku,
         tools=[query_tsp_routes, query_facility_connections, get_route_summary]
     )
 
@@ -1001,7 +1002,7 @@ def setup_agents(llm, tsp_results_dict, input_report):
                   "permafrost, road networks, rivers) stored in the graph "
                   "database.",
         verbose=True,
-        llm=llm,
+        llm=llm_haiku,
         tools=[query_friction_costs],
     )
 
@@ -1056,7 +1057,7 @@ def setup_agents(llm, tsp_results_dict, input_report):
                   "the graph database. You identify routes that are too "
                   "long, too costly, or ineffective and recommend improvements.",
         verbose=True,
-        llm=llm,
+        llm=llm_sonnet,
         tools=[query_friction_costs],
     )
 
@@ -1111,7 +1112,7 @@ def setup_agents(llm, tsp_results_dict, input_report):
                   "routes that were flagged as problematic — do not change "
                   "routes that are working well.",
         verbose=True,
-        llm=llm,
+        llm=llm_sonnet,
         tools=[query_tsp_routes, get_route_summary, query_facility_connections,
                remove_route_segment, insert_route_segment, split_route]
     )
@@ -1154,7 +1155,7 @@ def setup_agents(llm, tsp_results_dict, input_report):
                   "and technical writing. Skilled at synthesizing complex "
                   "information from multiple agents.",
         verbose=True,
-        llm=llm,
+        llm=llm_sonnet,
         tools=[save_report]
     )
 
@@ -1192,7 +1193,7 @@ def setup_agents(llm, tsp_results_dict, input_report):
                   "Excels at identifying reasoning flaws and finding "
                   "alternative explanations.",
         verbose=True,
-        llm=llm
+        llm=llm_sonnet
     )
 
     contrarian_task = Task(
@@ -1324,8 +1325,9 @@ def main():
     """Run the TSP model pipeline with DuckDB graph database."""
     global graph_con
 
-    # LLM setup (Ollama)
-    llm = pipeline.get_llm()
+    # LLM setup (per-agent tiers via OpenRouter by default)
+    llm_haiku = pipeline.get_llm("haiku")
+    llm_sonnet = pipeline.get_llm("sonnet")
 
     # Connect to graph database (read-write for writing routes)
     graph_con = duckdb.connect('regionalization.duckdb')
@@ -1374,15 +1376,15 @@ def main():
     tsp_results_dict = serialize_tours(regional_results)
 
     # Set up agents and tasks
-    agents, tasks = setup_agents(llm, tsp_results_dict, input_report)
+    agents, tasks = setup_agents(llm_haiku, llm_sonnet, tsp_results_dict, input_report)
 
-    # Configure crew
+    # Configure crew (agent-level llms take precedence; this is just a fallback)
     crew = Crew(
         agents=agents,
         tasks=tasks,
         process=Process.sequential,
         verbose=True,
-        llm=llm
+        llm=llm_haiku
     )
 
     print("\nRunning TSP Analysis Crew...")

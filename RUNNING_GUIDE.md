@@ -7,7 +7,7 @@ End-to-end walkthrough for running the Alaska fuel delivery multi-agent framewor
 The framework runs in **two environments**:
 
 1. **Google Colab** — runs `notebooks/gee_preprocessing.ipynb` to pull geospatial data from Google Earth Engine and external sources, then exports aligned rasters to Google Drive.
-2. **Jetstream2 VM** — runs the main pipeline (`run_graph.py`) with the Ollama LLM server and DuckDB graph database. The friction surface computation and all CrewAI agents live here.
+2. **Jetstream2 VM** — runs the main pipeline (`run_graph.py`) with agent LLM calls routed through OpenRouter (Claude Haiku 4.5 / Sonnet 4.6) and a DuckDB graph database. The friction surface computation and all CrewAI agents live here. A local Ollama backend is available as an opt-in fallback.
 
 ```
 ┌─────────────────────┐      ┌──────────────────────┐
@@ -165,7 +165,7 @@ Also download the 3 GeoJSONs from `./vectors/` (created in Colab's local filesys
 
 ## Phase 2: Jetstream2 VM Setup
 
-**Goal:** A running Jetstream2 VM with Python environment, Ollama LLM server, and the project code.
+**Goal:** A running Jetstream2 VM with Python environment, an LLM backend configured, and the project code.
 
 ### 2.1 Create or resume the VM
 
@@ -174,23 +174,44 @@ Also download the 3 GeoJSONs from `./vectors/` (created in Colab's local filesys
 - Attach a persistent volume
 - Set up Python venv
 - Install dependencies from `requirements.txt`
-- Install Ollama + pull `llama3.1:70b`
+- (Optional) Install Ollama + pull `llama3.1:70b` only if you plan to use the local fallback
 
 **Resuming existing instance:** Follow `JETSTREAM_SETUP_GUIDE.md` section B:
 ```bash
 module load miniforge
 cd /media/volume/<your-volume-name>
 source venv/bin/activate
-sudo systemctl start ollama  # if not auto-started
+# Only if using the Ollama fallback:
+# sudo systemctl start ollama
 ```
 
-### 2.2 Verify Ollama is running
+### 2.2 Configure the LLM backend
+
+The pipeline defaults to **OpenRouter** (Claude Haiku 4.5 for fast/cheap agents,
+Claude Sonnet 4.6 for reasoning/writing/contrarian agents). Per-agent tier
+assignments live in `pipeline.get_llm()` and are called from each agent module.
+
+**Option A — OpenRouter (default, recommended):**
 
 ```bash
-curl http://localhost:11434/api/tags
+export OPENROUTER_API_KEY="sk-or-v1-..."   # your OpenRouter key
+# LLM_PROVIDER defaults to "openrouter" — no need to set it
+python -c "import pipeline; pipeline.check_llm()"   # smoke-test
 ```
 
-Should return a JSON list of installed models with `llama3.1:70b` in it.
+**Option B — Ollama fallback (legacy, local GPU):**
+
+```bash
+export LLM_PROVIDER=ollama
+export OLLAMA_MODEL=llama3.1:70b          # optional override
+sudo systemctl start ollama
+curl http://localhost:11434/api/tags       # should list llama3.1:70b
+python -c "import pipeline; pipeline.check_llm()"
+```
+
+`pipeline.check_llm()` dispatches to `check_openrouter()` or `check_ollama()`
+based on `LLM_PROVIDER`. A missing `OPENROUTER_API_KEY` raises a clear error
+before any agent is spawned.
 
 ### 2.3 Ensure project code is up to date
 
@@ -437,17 +458,30 @@ import os
 print(os.listdir(os.environ.get('RASTER_DIR', './rasters')))
 ```
 
-### Ollama timeouts in agent steps
-
-The pipeline has a 30-minute LLM timeout baked in. If you still hit timeouts:
+### OpenRouter errors or auth failures
 
 ```bash
-# Check Ollama is healthy
+# Confirm the key is set in the current shell
+echo "${OPENROUTER_API_KEY:+set}"           # should print "set"
+python -c "import pipeline; pipeline.check_llm()"
+```
+
+If `check_llm()` raises, re-export your key or double-check it in the
+OpenRouter dashboard. The pipeline reads `OPENROUTER_API_KEY` fresh on each
+run — stale or revoked keys will fail fast before any agent starts.
+
+### LLM timeouts in agent steps
+
+The pipeline has a 60-minute per-request LLM timeout baked in. If you still
+hit timeouts on OpenRouter, check https://status.openrouter.ai/ for incidents.
+On the Ollama fallback, check that the server is healthy:
+
+```bash
 curl http://localhost:11434/api/tags
 sudo systemctl status ollama
-
-# Increase timeout in pipeline.py get_llm() if needed
 ```
+
+Adjust the timeout in `pipeline.get_llm()` if your workload needs it.
 
 ### `KeyError: 'roads_type'`
 

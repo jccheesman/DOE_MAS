@@ -460,11 +460,13 @@ def save_friction_report(report_json: str) -> str:
 # Agent & Task Setup
 # ===========================================================================
 
-def setup_agents(llm):
+def setup_agents(llm_haiku, llm_sonnet):
     """Create and configure all friction-related CrewAI agents and tasks.
 
     Args:
-        llm: Configured LLM instance from pipeline.get_llm()
+        llm_haiku:  CrewAI LLM instance for the Cost Estimator agent.
+        llm_sonnet: CrewAI LLM instance for the Friction Modeler, Seasonal
+                    Enhancer, and Validation agents.
 
     Returns:
         tuple: (agents_list, tasks_list) for Crew initialization
@@ -491,7 +493,7 @@ def setup_agents(llm):
             "edge in the graph database."
         ),
         verbose=True,
-        llm=llm,
+        llm=llm_sonnet,
         tools=[run_friction_computation, query_friction_stats],
     )
 
@@ -563,7 +565,7 @@ def setup_agents(llm):
             "river freeze/breakup data."
         ),
         verbose=True,
-        llm=llm,
+        llm=llm_sonnet,
         tools=[apply_seasonal_multipliers, query_seasonal_friction],
     )
 
@@ -609,7 +611,7 @@ def setup_agents(llm):
             "route optimization by the TSP model."
         ),
         verbose=True,
-        llm=llm,
+        llm=llm_haiku,
         tools=[compute_delivery_costs, query_delivery_costs],
     )
 
@@ -655,7 +657,7 @@ def setup_agents(llm):
             "calibration factors to improve accuracy."
         ),
         verbose=True,
-        llm=llm,
+        llm=llm_sonnet,
         tools=[
             validate_costs_against_benchmarks,
             query_delivery_costs,
@@ -712,10 +714,11 @@ def main():
     """
     global graph_con
 
-    llm = pipeline.get_llm()
+    llm_haiku = pipeline.get_llm("haiku")
+    llm_sonnet = pipeline.get_llm("sonnet")
     graph_con = connect_graph_db()
 
-    agents, tasks = setup_agents(llm)
+    agents, tasks = setup_agents(llm_haiku, llm_sonnet)
 
     crew = Crew(
         agents=agents,

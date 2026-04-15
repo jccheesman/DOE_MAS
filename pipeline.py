@@ -45,23 +45,69 @@ def get_shapefile(path):
 	return shapefile
 
 
-def get_llm():
-	"""Return a configured LLM instance using Ollama."""
+# ---------------------------------------------------------------------------
+# LLM configuration
+# ---------------------------------------------------------------------------
+#
+# Agents call `pipeline.get_llm(tier)` where tier is "haiku" or "sonnet".
+# The provider is chosen by the LLM_PROVIDER env var:
+#   - "openrouter" (default): route Claude Haiku 4.5 / Sonnet 4.6 via OpenRouter
+#   - "ollama":               legacy local path, uses OLLAMA_MODEL for both tiers
+
+OPENROUTER_MODELS = {
+    "haiku":  "openrouter/anthropic/claude-haiku-4.5",
+    "sonnet": "openrouter/anthropic/claude-sonnet-4.6",
+}
+
+
+def get_llm(tier="haiku"):
+	"""Return a configured CrewAI LLM instance.
+
+	Args:
+		tier: "haiku" for fast/cheap agents, "sonnet" for reasoning/writing
+			agents. Ignored when LLM_PROVIDER=ollama.
+	"""
 	from crewai import LLM
 
-	api_base = os.getenv("OLLAMA_API_BASE", "http://localhost:11434")
-	model_name = os.getenv("OLLAMA_MODEL", "llama3.1:70b")
+	provider = os.getenv("LLM_PROVIDER", "openrouter").lower()
 
-	os.environ["OLLAMA_API_BASE"] = api_base
+	if provider == "openrouter":
+		if tier not in OPENROUTER_MODELS:
+			raise ValueError(
+				f"Unknown LLM tier {tier!r}; expected one of "
+				f"{sorted(OPENROUTER_MODELS)}"
+			)
+		api_key = os.getenv("OPENROUTER_API_KEY")
+		if not api_key:
+			raise RuntimeError(
+				"OPENROUTER_API_KEY is not set. Export it before running the "
+				"pipeline, or set LLM_PROVIDER=ollama to use the legacy local "
+				"Ollama backend."
+			)
+		model = OPENROUTER_MODELS[tier]
+		print(f"LLM configured: {model} (tier={tier}) via OpenRouter")
+		return LLM(
+			model=model,
+			api_key=api_key,
+			timeout=3600,
+			num_retries=3,
+		)
 
-	model = f"ollama/{model_name}" if not model_name.startswith("ollama/") else model_name
+	if provider == "ollama":
+		api_base = os.getenv("OLLAMA_API_BASE", "http://localhost:11434")
+		model_name = os.getenv("OLLAMA_MODEL", "llama3.1:70b")
+		os.environ["OLLAMA_API_BASE"] = api_base
+		model = f"ollama/{model_name}" if not model_name.startswith("ollama/") else model_name
+		print(f"LLM configured: {model} at {api_base} (tier={tier} ignored for Ollama)")
+		return LLM(
+			model=model,
+			base_url=api_base,
+			timeout=3600,       # 60 min — 70B model can be slow on complex prompts
+			num_retries=3,      # retry on transient connection errors
+		)
 
-	print(f"LLM configured: {model} at {api_base}")
-	return LLM(
-		model=model,
-		base_url=api_base,
-		timeout=3600,       # 60 min — 70B model can be slow on complex prompts
-		num_retries=3,      # retry on transient connection errors
+	raise ValueError(
+		f"Unknown LLM_PROVIDER={provider!r}; expected 'openrouter' or 'ollama'."
 	)
 
 
@@ -87,6 +133,42 @@ def check_ollama(max_retries=3, wait_seconds=10):
     raise ConnectionError(
         f"Ollama is not responding at {api_base} after {max_retries} attempts. "
         "Check that the Ollama service is running."
+    )
+
+
+def check_openrouter():
+    """Verify OpenRouter is reachable and the API key is set."""
+    api_key = os.getenv("OPENROUTER_API_KEY")
+    if not api_key:
+        raise ConnectionError(
+            "OPENROUTER_API_KEY is not set. Export your OpenRouter key before "
+            "running the pipeline, or set LLM_PROVIDER=ollama to use the "
+            "legacy local backend."
+        )
+
+    url = "https://openrouter.ai/api/v1/models"
+    try:
+        req = urllib.request.Request(url, headers={"Authorization": f"Bearer {api_key}"})
+        resp = urllib.request.urlopen(req, timeout=15)
+        resp.close()
+        print("OpenRouter health check passed")
+        return True
+    except (urllib.error.URLError, OSError) as e:
+        raise ConnectionError(
+            f"OpenRouter is not reachable at {url}: {e}. "
+            "Check network connectivity and API key validity."
+        )
+
+
+def check_llm():
+    """Provider-aware LLM health check; delegates based on LLM_PROVIDER."""
+    provider = os.getenv("LLM_PROVIDER", "openrouter").lower()
+    if provider == "openrouter":
+        return check_openrouter()
+    if provider == "ollama":
+        return check_ollama()
+    raise ValueError(
+        f"Unknown LLM_PROVIDER={provider!r}; expected 'openrouter' or 'ollama'."
     )
 
 

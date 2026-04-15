@@ -6,10 +6,9 @@ Market & Cost Analysis module for the DOE MAS pipeline.
 Conducts a broad-scale analysis & overview of the current market dynamics,
 cost, delivery methods, and seasonality of fuel delivery in Alaska.
 
-This module replaces broad_overview_agent_discussion.py with:
-- DuckDB graph database as the primary data source (no nested dicts)
-- Rebranded agents focused on market dynamics, economics, and delivery costs
-- Preserved multi-agent discussion structure with contrarian review
+Uses the DuckDB graph database as the primary data source, with agents
+focused on market dynamics, economics, and delivery costs in a multi-
+agent discussion structure that includes a contrarian review step.
 
 Agents:
     - Market Dynamics Analyst: Fuel prices, demand, transportation rates, key drivers
@@ -209,11 +208,14 @@ def save_report(json_report: str) -> str:
 # Agent & Task Setup
 # ===========================================================================
 
-def setup_agents(llm):
+def setup_agents(llm_haiku, llm_sonnet):
     """Create all agents and tasks for the market & cost analysis.
 
     Args:
-        llm: CrewAI LLM instance
+        llm_haiku:  CrewAI LLM instance for fast/cheap agents
+                    (Market Dynamics, Economic & Environmental, Delivery Method).
+        llm_sonnet: CrewAI LLM instance for reasoning/writing agents
+                    (Writer, Contrarian).
 
     Returns:
         Tuple of (agents_list, tasks_list)
@@ -232,7 +234,7 @@ def setup_agents(llm):
                   "draw on broad domain knowledge, research, and market "
                   "intelligence to provide a comprehensive macro-level view.",
         verbose=True,
-        llm=llm
+        llm=llm_haiku
     )
 
     market_dynamics_task = Task(
@@ -277,7 +279,7 @@ def setup_agents(llm):
                   "policy knowledge, and environmental science to provide "
                   "context that goes beyond the immediate dataset.",
         verbose=True,
-        llm=llm
+        llm=llm_haiku
     )
 
     economic_environmental_task = Task(
@@ -323,7 +325,7 @@ def setup_agents(llm):
                   "Do not fabricate facility names, counts, distances, or "
                   "statistics — only report what the tools return.",
         verbose=True,
-        llm=llm,
+        llm=llm_haiku,
         tools=[query_graph_facilities, query_graph_regions,
                query_delivery_method_stats]
     )
@@ -379,7 +381,7 @@ def setup_agents(llm):
                   "out key insights and identifying areas of agreement "
                   "and disagreement.",
         verbose=True,
-        llm=llm,
+        llm=llm_sonnet,
         tools=[save_report]
     )
 
@@ -399,7 +401,7 @@ def setup_agents(llm):
                   "regions, and delivery patterns are supported by the graph "
                   "database data rather than assumed.",
         verbose=True,
-        llm=llm
+        llm=llm_sonnet
     )
 
     # ===================================================================
@@ -585,8 +587,9 @@ def setup_agents(llm):
 
 def main():
     """Run the market & cost analysis pipeline."""
-    # LLM setup (Ollama)
-    llm = pipeline.get_llm()
+    # LLM setup (per-agent tiers via OpenRouter by default)
+    llm_haiku = pipeline.get_llm("haiku")
+    llm_sonnet = pipeline.get_llm("sonnet")
 
     # Connect to graph database (read-only)
     connect_graph_db('regionalization.duckdb')
@@ -602,15 +605,15 @@ def main():
     print()
 
     # Set up agents and tasks
-    agents, tasks = setup_agents(llm)
+    agents, tasks = setup_agents(llm_haiku, llm_sonnet)
 
-    # Configure crew
+    # Configure crew (agent-level llms take precedence; this is just a fallback)
     crew = Crew(
         agents=agents,
         tasks=tasks,
         process=Process.sequential,
         verbose=True,
-        llm=llm
+        llm=llm_haiku
     )
 
     print("Running Market & Cost Analysis Crew...")

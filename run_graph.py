@@ -1,8 +1,6 @@
 """run_graph.py
 
-Orchestration script for the DuckDB graph-based MAS pipeline.
-
-This replaces run.py and calls the new graph-integrated modules:
+Orchestration script for the DuckDB graph-based MAS pipeline. Calls:
 1. regionalization_graph.py  - Creates regionalization.duckdb graph database
 2. market_cost_analysis.py   - Market & cost analysis using graph DB
 3. friction_surface.py       - Friction raster computation (no LLM)
@@ -47,17 +45,17 @@ def should_run(step):
     return True
 
 def run_step(step_name, step_func):
-    """Run a pipeline step with Ollama health check and timeout retry."""
+    """Run a pipeline step with LLM health check and timeout retry."""
     if not should_run(step_name):
         return
 
-    pipeline.check_ollama()
+    pipeline.check_llm()
     try:
         step_func()
     except Exception as e:
         if "timed out" in str(e).lower() or "timeout" in str(e).lower():
-            print(f"\nTimeout on {step_name}, checking Ollama and retrying...")
-            pipeline.check_ollama()
+            print(f"\nTimeout on {step_name}, checking LLM and retrying...")
+            pipeline.check_llm()
             step_func()  # retry once
         else:
             raise

@@ -848,8 +848,8 @@ def save_as_csv():
 # CrewAI Agents
 # ---------------------------------------------------------------------------
 
-# Set LLM (Ollama)
-llm = pipeline.get_llm()
+# Set LLMs (both regionalization agents use Haiku 4.5 via OpenRouter)
+llm_haiku = pipeline.get_llm("haiku")
 
 # Agent - Delivery method analyst
 delivery_method_agent = Agent(
@@ -857,7 +857,7 @@ delivery_method_agent = Agent(
     goal="Analyze each bulk fuel facility site's delivery method to ensure each has a set delivery method.",
     backstory="""Expert in logistics and market analysis, with a focus on regional fuel delivery in Alaska, specifically delivery methods. Bases all decisions strictly on facility data and the graph database rather than assumptions.""",
     verbose=True,
-    llm=llm,
+    llm=llm_haiku,
     tools=[add_new_delivery_methods, get_facility_dictionary, update_facility_dictionary]
 )
 
@@ -909,7 +909,7 @@ logistics_agent = Agent(
     facility data — references real facility counts, coordinates, and delivery methods from the dataset
     rather than making assumptions.''',
     verbose=True,
-    llm=llm,
+    llm=llm_haiku,
     tools=[save_json]
 )
 

@@ -66,18 +66,24 @@ chmod +x installations.txt
 ./installations.txt
 ```
 
-### 9. Set Up Ollama (LLM Server)
+### 9. Configure the LLM backend
+
+The pipeline routes agent calls through **OpenRouter** by default (Claude
+Haiku 4.5 for fast agents, Claude Sonnet 4.6 for reasoning/writing agents).
+Export your API key before running:
 
 ```bash
-sudo bash setup_ollama.sh
+export OPENROUTER_API_KEY="sk-or-v1-..."
+# Persist across sessions by appending to ~/.bashrc or the venv activate script
 ```
 
-This script will:
-- Detect and mount the attached volume
-- Install Ollama
-- Store models on the volume (not root disk)
-- Pull `llama3.1:70b` (~40 GB)
-- Bind Ollama to `0.0.0.0:11434` for access
+**Optional Ollama fallback:** If you prefer the local `llama3.1:70b`
+backend, install it with:
+
+```bash
+sudo bash setup_ollama.sh      # mounts volume, installs Ollama, pulls llama3.1:70b (~40 GB)
+export LLM_PROVIDER=ollama     # switch the pipeline to use Ollama
+```
 
 ### 10. Run the Project
 
@@ -86,6 +92,9 @@ This script will:
 ```bash
 # Start a named tmux session
 tmux new -s pipeline
+
+# Sanity-check the LLM backend before the full run
+python -c "import pipeline; pipeline.check_llm()"
 
 # Run the pipeline
 python run_graph.py
@@ -112,17 +121,20 @@ cd /media/volume/<your-volume-name>
 source venv/bin/activate
 ```
 
-### 3. (If needed) Restart Ollama
+### 3. (If needed) Re-export the LLM credentials
 
-Ollama should auto-start via systemd, but if not:
+If `OPENROUTER_API_KEY` isn't already in the environment, re-export it:
+
+```bash
+export OPENROUTER_API_KEY="sk-or-v1-..."
+python -c "import pipeline; pipeline.check_llm()"   # should print "OpenRouter health check passed"
+```
+
+If you're using the Ollama fallback (`LLM_PROVIDER=ollama`), make sure the
+server is running:
 
 ```bash
 sudo systemctl start ollama
-```
-
-Verify it's running:
-
-```bash
 curl http://localhost:11434/api/tags
 ```
 
@@ -144,10 +156,13 @@ python run_graph.py
 | Root Disk | 150 GB |
 | Volume | 200 GB+ (attached, persists between instances) |
 | Python venv | `/media/volume/<name>/venv` |
-| Ollama models | `/mnt/ollama_volume/ollama/models` |
-| Ollama endpoint | `http://localhost:11434` |
-| LLM model | `llama3.1:70b` |
-| Key env vars | `OLLAMA_API_BASE`, `OLLAMA_MODEL` |
+| Default LLM provider | OpenRouter (Claude Haiku 4.5 + Sonnet 4.6 per-agent) |
+| Required env var | `OPENROUTER_API_KEY` |
+| Optional env var | `LLM_PROVIDER=ollama` (use local Ollama fallback instead) |
+| Ollama models (fallback) | `/mnt/ollama_volume/ollama/models` |
+| Ollama endpoint (fallback) | `http://localhost:11434` |
+| Ollama model (fallback) | `llama3.1:70b` |
+| Ollama env vars (fallback) | `OLLAMA_API_BASE`, `OLLAMA_MODEL` |
 
 ---
 
