@@ -39,7 +39,7 @@ Several datasets can't be automated — download them to your computer first:
 |------|--------|-------|
 | `airports.csv` | https://davidmegginson.github.io/ourairports-data/airports.csv | ~13 MB, all global airports |
 | `NWN_Waterway_Network_Lines.zip` | https://geospatial-usace.opendata.arcgis.com/datasets/ace7645d305647448a84492a3b909d48_1 | Click "Download" → Shapefile |
-| `AK_Ports_and_Harbors.zip` | AK DOT&PF | Shapefile of Alaska ports/harbors |
+| `AK_Ports_and_Harbors.zip` | AK DOT&PF | Alaska state-maintained harbors; merged with USACE NWN ports (which are fetched live from the FeatureServer API during notebook run) |
 | `Utilities_Bulk_Fuel_Inventory.csv` | Alaska Energy Authority | Facility site locations (already in repo) |
 | `Alaska_Energy_Authority_Library.shp` | Alaska Energy Authority | Regional boundaries (already in repo) |
 
