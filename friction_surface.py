@@ -286,18 +286,20 @@ def build_friction_barge(rasters):
                 continue
 
             if 0 <= r < shape[0] and 0 <= c < shape[1]:
-                # Determine port type
-                port_type = "port"
-                if hasattr(port, "type") and port["type"] == "beach_landing":
-                    port_type = "beach_landing"
+                port_class = port.get("port_class", "port")
+                base_fric = fc.PORT_FRICTION.get(port_class,
+                                                  fc.PORT_FRICTION["port"])
+                buf = fc.PORT_BUFFER.get(port_class, 1)
+                decay = fc.PORT_DECAY_PER_PIXEL.get(port_class, 0.0)
 
-                fric = fc.PORT_FRICTION.get(port_type, fc.PORT_FRICTION["port"])
-                # Set the port cell and a small neighbourhood (3x3)
-                for dr in range(-1, 2):
-                    for dc in range(-1, 2):
+                for dr in range(-buf, buf + 1):
+                    for dc in range(-buf, buf + 1):
                         rr, cc = r + dr, c + dc
                         if 0 <= rr < shape[0] and 0 <= cc < shape[1]:
-                            out[rr, cc] = fric
+                            d = max(abs(dr), abs(dc))
+                            fric = base_fric + d * decay
+                            if fric < out[rr, cc]:
+                                out[rr, cc] = fric
 
     return out
 

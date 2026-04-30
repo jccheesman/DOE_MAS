@@ -144,6 +144,16 @@ PORT_FRICTION = {
     "no_port": IMPASSABLE, # no port access
 }
 
+PORT_BUFFER = {
+    "port":          3,    # 7x7 kernel, ~1 km diameter at 150m
+    "beach_landing": 1,    # 3x3 kernel, ~450m diameter
+}
+
+PORT_DECAY_PER_PIXEL = {
+    "port":          0.1,  # 1.0 -> 1.1 -> 1.2 -> 1.3
+    "beach_landing": 0.0,  # uniform 1.4 across buffer
+}
+
 # ---------------------------------------------------------------------------
 # Airport access friction (Plane delivery)
 # ---------------------------------------------------------------------------
