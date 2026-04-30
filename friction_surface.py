@@ -163,13 +163,30 @@ def build_lulc_permafrost_friction(lulc, permafrost):
 # 4. Build road friction surface
 # =========================================================================
 
+def _dilate_mask(mask, pixels):
+    """Binary-dilate a boolean mask by *pixels* rounds (3x3 structuring element).
+
+    Uses pure numpy (no scipy dependency).  Edge pixels are padded with
+    False so dilation cannot wrap around.
+    """
+    out = mask
+    for _ in range(pixels):
+        p = np.pad(out, 1, constant_values=False)
+        out = (
+            p[:-2, :-2] | p[:-2, 1:-1] | p[:-2, 2:]
+            | p[1:-1, :-2] | p[1:-1, 1:-1] | p[1:-1, 2:]
+            | p[2:, :-2] | p[2:, 1:-1] | p[2:, 2:]
+        )
+    return out
+
+
 def build_friction_road(rasters):
     """Build composite road-delivery friction surface.
 
     Logic:
         a. Start with max(slope_friction, lulc_permafrost_friction) per pixel.
-        b. Where roads exist (GRIP4 binary presence), override with the
-           uniform ROAD_PRESENT_FRICTION value.
+        b. Where roads exist (GRIP4 binary presence, optionally dilated by
+           ROAD_BUFFER_PIXELS), override with ROAD_PRESENT_FRICTION.
         c. Where rivers exist, set to IMPASSABLE.
         d. Where LULC is water (class 0), set to IMPASSABLE.
 
@@ -195,6 +212,8 @@ def build_friction_road(rasters):
 
     # (b) override where roads are present (uniform friction value)
     road_mask = (roads_pres.astype(int) == fc.GRIP4_ROAD_PRESENT)
+    if fc.ROAD_BUFFER_PIXELS > 0:
+        road_mask = _dilate_mask(road_mask, fc.ROAD_BUFFER_PIXELS)
     base[road_mask] = fc.ROAD_PRESENT_FRICTION
 
     # (c) rivers -> impassable for road

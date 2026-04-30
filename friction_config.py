@@ -115,6 +115,12 @@ PERMAFROST_LULC_MATRIX = {
 # uniformly as ideal traversal (1.0).
 ROAD_PRESENT_FRICTION = 1.0
 
+# Number of pixels to dilate the GRIP4 road mask before applying the
+# friction override.  1 pixel at 150 m absorbs vector-to-raster snap
+# error and stabilises WhiteboxTools cost-distance paths along narrow
+# road corridors.  Set to 0 to disable.
+ROAD_BUFFER_PIXELS = 1
+
 # ---------------------------------------------------------------------------
 # River friction
 # ---------------------------------------------------------------------------
