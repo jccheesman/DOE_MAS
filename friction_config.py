@@ -12,7 +12,8 @@ Sources:
     - Trochim et al. (review) -- land cover and permafrost friction values
     - Atkinson et al., 2005 -- slope classification thresholds
     - FAA 14 CFR 91.177 -- minimum safe altitude (MSA) for planes
-    - Obu et al., 2019 -- permafrost zonation classification
+    - Pastick et al., 2015 -- near-surface permafrost probability (30m)
+      DOI: 10.5066/F7C53HX6
 """
 
 # ---------------------------------------------------------------------------
@@ -71,7 +72,7 @@ LULC_FRICTION_ROAD = {
 }
 
 # ---------------------------------------------------------------------------
-# Permafrost zones (Obu et al., 2019 reclassified)
+# Permafrost zones (reclassified from Pastick et al., 2015 probability)
 # ---------------------------------------------------------------------------
 PERMAFROST_ZONES = {
     0: "none",
