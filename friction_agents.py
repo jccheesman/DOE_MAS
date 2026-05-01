@@ -66,9 +66,10 @@ def connect_graph_db(db_path='regionalization.duckdb'):
 def run_friction_computation() -> str:
     """Trigger the full friction surface computation pipeline.
 
-    Builds composite friction rasters (friction_road.tif, friction_barge.tif,
-    friction_sky.tif) from GEE-exported layers, then computes least-cost
-    paths for all connects_to edges using WhiteboxTools cost_distance.
+    Builds composite friction rasters (friction_road.tif, friction_barge.tif)
+    from GEE-exported layers, then computes least-cost paths for Road and
+    Barge edges using WhiteboxTools cost_distance. Plane edges use direct
+    Haversine distance (airport-to-airport, no friction raster).
 
     Updates the graph database with avg_friction, max_friction, and
     path_length_miles on each connects_to edge.
@@ -504,15 +505,16 @@ def setup_agents(llm_haiku, llm_sonnet):
     friction_task = Task(
         description=(
             "Execute the friction surface computation pipeline:\n\n"
-            "1. Use the run_friction_computation tool. It builds three "
-            "separate friction rasters:\n"
+            "1. Use the run_friction_computation tool. It builds two "
+            "friction rasters and handles plane routes separately:\n"
             "   - friction_road.tif: for Road delivery (land traversal)\n"
             "   - friction_barge.tif: for Barge delivery (water navigation)\n"
-            "   - friction_sky.tif: for Plane delivery (airspace clearance)\n"
-            "   The methodology for assembling these rasters:\n"
+            "   - Plane delivery: uses direct Haversine distance between "
+            "facilities (airport-to-airport, no terrain friction raster)\n"
+            "   The methodology for assembling the rasters:\n"
             "   a) Reclassify slope into friction: flat (<2°)=1.0, "
             "rolling (2-8°)=1.4, mountain (>8°)=1.75.\n"
-            "   b) Combine Dynamic World land cover with Obu et al. "
+            "   b) Combine Dynamic World land cover with Pastick et al. "
             "permafrost zonation via a lookup matrix — e.g. grass on "
             "continuous permafrost=1.88, trees on sporadic=1.87.\n"
             "   c) Per pixel, take max(slope friction, LULC-permafrost "
@@ -521,15 +523,14 @@ def setup_agents(llm_haiku, llm_sonnet):
             "uniform ROAD_PRESENT_FRICTION value (1.0) to override the "
             "underlying terrain friction.\n"
             "   e) Set rivers and water to 999 (impassable) for road; "
-            "navigable (major=1.0, minor=1.5) for barge.\n"
-            "   f) For planes, compare DEM elevation against FAA minimum "
-            "safe altitude (2000ft AGL mountainous) — below MSA is "
-            "impassable (999), above gets friction 10.0.\n"
-            "   g) Run WhiteboxTools cost_distance from each source "
+            "navigable (1.0) for barge.\n"
+            "   f) Run WhiteboxTools cost_distance from each source "
             "facility to produce accumulated cost surfaces, then trace "
             "least-cost paths via backlink rasters.\n"
-            "   h) Sample friction along each traced path to compute "
-            "weighted average friction (WAF) and path length in miles.\n\n"
+            "   g) Sample friction along each traced path to compute "
+            "weighted average friction (WAF) and path length in miles.\n"
+            "   h) Plane edges are set to avg_friction=1.0 and "
+            "path_length_miles=Haversine distance (no terrain penalty).\n\n"
             "2. Once complete, use query_friction_stats to review the "
             "results by region and delivery method.\n\n"
             "3. Report a summary table of all criteria (slope, land cover, "
@@ -624,7 +625,8 @@ def setup_agents(llm_haiku, llm_sonnet):
             "Compute delivery costs for all connects_to edges:\n"
             "1. Use compute_delivery_costs to calculate costs using the "
             "formula: DeliveryCost = WAF_seasonal * path_length_miles * "
-            "BaselineRate.\n"
+            "BaselineRate. For Plane edges, WAF=1.0 and path_length is "
+            "Haversine distance, so cost = distance_miles * $11.50.\n"
             "2. Baseline rates: Road=$3.50/mi, Barge=$2.00/mi, Plane=$11.50/mi\n"
             "3. Write delivery_cost, cost_summer, cost_shoulder, cost_winter, "
             "cost_fwd, and cost_rev to each edge.\n"

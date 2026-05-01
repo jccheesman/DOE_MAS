@@ -305,80 +305,19 @@ def build_friction_barge(rasters):
 
 
 # =========================================================================
-# 6. Build sky (plane) friction surface
+# 6. Save friction rasters
 # =========================================================================
+#
+# Note: Plane delivery uses direct Haversine distance (airport-to-airport)
+# rather than a cell-by-cell friction surface.  Plane edges are populated
+# with avg_friction=1.0 and path_length_miles=distance_miles in main().
 
-def build_friction_sky(rasters):
-    """Build plane-delivery friction surface.
-
-    Logic:
-        a. Use DEM for elevation.
-        b. Cells above MSA threshold -> PLANE_FRICTION_ABOVE_MSA (10.0).
-        c. Cells below MSA -> IMPASSABLE (999).
-        d. Treat all of Alaska as mountainous (2000 ft = 609.6 m MSA).
-        e. Airport locations from airports_alaska.geojson -> friction 1.0.
-
-    Args:
-        rasters: dict from load_rasters().
-
-    Returns:
-        np.ndarray (float32) -- plane friction surface.
-    """
-    dem_arr = rasters["dem"][0]
-    profile = rasters["dem"][1]
-    shape = dem_arr.shape
-
-    # MSA threshold in metres (mountainous for all of Alaska)
-    msa_m = fc.PLANE_MSA_FEET["mountainous"] * 0.3048  # 609.6 m
-
-    out = np.full(shape, fc.PLANE_FRICTION_BELOW_MSA, dtype=np.float32)
-
-    # Cells above MSA
-    above = dem_arr >= msa_m
-    out[above] = fc.PLANE_FRICTION_ABOVE_MSA
-
-    # Airport locations
-    airports_path = fc.VECTOR_FILES["airports"]
-    if os.path.exists(airports_path):
-        import geopandas as gpd
-
-        airports = gpd.read_file(airports_path)
-        transform = profile["transform"]
-        target_crs = str(profile["crs"])
-
-        if airports.crs is not None and str(airports.crs) != target_crs:
-            airports = airports.to_crs(target_crs)
-
-        for _, ap in airports.iterrows():
-            geom = ap.geometry
-            px, py = geom.x, geom.y
-            try:
-                r, c = rowcol(transform, px, py)
-            except Exception:
-                continue
-
-            if 0 <= r < shape[0] and 0 <= c < shape[1]:
-                # Airport cell and immediate neighbourhood
-                for dr in range(-1, 2):
-                    for dc in range(-1, 2):
-                        rr, cc = r + dr, c + dc
-                        if 0 <= rr < shape[0] and 0 <= cc < shape[1]:
-                            out[rr, cc] = fc.AIRPORT_FRICTION["access"]
-
-    return out
-
-
-# =========================================================================
-# 7. Save friction rasters
-# =========================================================================
-
-def save_friction_rasters(road, barge, sky, profile, output_dir=None):
+def save_friction_rasters(road, barge, profile, output_dir=None):
     """Write friction surfaces to GeoTIFF files.
 
     Args:
         road: 2-D array -- road friction surface.
         barge: 2-D array -- barge friction surface.
-        sky: 2-D array -- plane friction surface.
         profile: rasterio profile dict (CRS, transform, etc.).
         output_dir: Directory for output files.  Defaults to raster_dir.
     """
@@ -390,8 +329,7 @@ def save_friction_rasters(road, barge, sky, profile, output_dir=None):
     write_profile.update(dtype="float32", count=1, compress="lzw", nodata=-9999)
 
     names = {"friction_road.tif": road,
-             "friction_barge.tif": barge,
-             "friction_sky.tif": sky}
+             "friction_barge.tif": barge}
 
     for fname, arr in names.items():
         path = os.path.join(output_dir, fname)
@@ -723,12 +661,15 @@ def main(con=None):
         a. Get or create DuckDB connection.
         b. Reproject facilities to EPSG:3413.
         c. Load all rasters.
-        d. Build friction_road, friction_barge, friction_sky.
+        d. Build friction_road, friction_barge (no plane friction — see below).
         e. Save friction rasters.
-        f. For each delivery method, compute least-cost paths.
-        g. Handle "Plane or Road" by computing both and selecting lower cost.
-        h. Update graph with friction values.
-        i. Print summary statistics.
+        f. For Road and Barge, compute least-cost paths via WhiteboxTools.
+        g. For Plane, set avg_friction=1.0 and path_length_miles=distance_miles
+           (direct Haversine — planes fly airport-to-airport, not cell-by-cell).
+        h. Handle "Plane or Road" hybrid: compare Road friction cost against
+           Haversine × plane rate, pick the cheaper option.
+        i. Update graph with friction values.
+        j. Print summary statistics.
 
     Args:
         con: Optional existing DuckDB connection.  If None, one is created.
@@ -755,7 +696,7 @@ def main(con=None):
         # Grab a reference profile for output
         ref_profile = rasters["lulc"][1]
 
-        # (d) Build friction surfaces
+        # (d) Build friction surfaces (road and barge only)
         print("\n--- Building road friction surface ---")
         friction_road = build_friction_road(rasters)
         print(f"  Range: [{friction_road.min():.2f}, {friction_road.max():.2f}]")
@@ -764,21 +705,15 @@ def main(con=None):
         friction_barge = build_friction_barge(rasters)
         print(f"  Range: [{friction_barge.min():.2f}, {friction_barge.max():.2f}]")
 
-        print("\n--- Building plane friction surface ---")
-        friction_sky = build_friction_sky(rasters)
-        print(f"  Range: [{friction_sky.min():.2f}, {friction_sky.max():.2f}]")
-
         # (e) Save friction rasters
         print("\n--- Saving friction rasters ---")
-        save_friction_rasters(friction_road, friction_barge, friction_sky,
-                              ref_profile)
+        save_friction_rasters(friction_road, friction_barge, ref_profile)
 
-        # (f) Compute least-cost paths per method
+        # (f) Compute least-cost paths for Road and Barge
         raster_dir = pipeline.get_raster_dir()
         method_raster_map = {
             "Road":  os.path.join(raster_dir, "friction_road.tif"),
             "Barge": os.path.join(raster_dir, "friction_barge.tif"),
-            "Plane": os.path.join(raster_dir, "friction_sky.tif"),
         }
 
         all_results = []
@@ -787,62 +722,77 @@ def main(con=None):
             results = compute_paths_for_method(con, raster_path, method)
             all_results.extend(results)
 
-        # (g) Handle "Plane or Road" method
+        # (g) Plane: direct Haversine distance (no friction surface)
+        print("\n--- Setting Plane edges to direct Haversine distance ---")
+        n_plane = con.execute("""
+            UPDATE connects_to
+            SET avg_friction = 1.0,
+                max_friction = 1.0,
+                path_length_miles = distance_miles
+            WHERE method = 'Plane'
+              AND distance_miles IS NOT NULL
+        """).fetchone()
+        plane_count = con.execute(
+            "SELECT COUNT(*) FROM connects_to "
+            "WHERE method = 'Plane' AND avg_friction IS NOT NULL"
+        ).fetchone()[0]
+        print(f"  {plane_count} Plane edges set to Haversine distance")
+
+        # (h) Handle "Plane or Road" hybrid: compare Road friction cost
+        # against direct Haversine × plane rate, pick the cheaper option
         print("\n--- Computing 'Plane or Road' paths ---")
+        road_tif = method_raster_map["Road"]
+        road_res = compute_paths_for_method(con, road_tif, "Plane or Road")
+
+        plane_rate = fc.BASELINE_RATES.get("Plane", 11.5)
+        road_rate = fc.BASELINE_RATES.get("Road", 3.5)
+
         por_edges = con.execute(
-            "SELECT src, dst FROM connects_to WHERE method = 'Plane or Road'"
+            "SELECT src, dst, distance_miles FROM connects_to "
+            "WHERE method = 'Plane or Road'"
         ).fetchall()
 
-        if por_edges:
-            road_tif = method_raster_map["Road"]
-            sky_tif = method_raster_map["Plane"]
+        por_results = []
+        road_map = {
+            (r["src"], r["dst"]): r for r in road_res
+            if r["avg_friction"] is not None
+        }
+        for src_id, dst_id, dist_mi in por_edges:
+            key = (src_id, dst_id)
+            r_val = road_map.get(key)
+            road_cost = (r_val["avg_friction"] * r_val["path_length_miles"]
+                         * road_rate if r_val else None)
+            plane_cost = dist_mi * plane_rate if dist_mi else None
 
-            # Temporarily relabel for computation
-            por_results = []
-            for src_id, dst_id in por_edges:
-                # Compute road cost
-                road_res = compute_paths_for_method(
-                    con, road_tif, "Plane or Road"
-                )
-                plane_res = compute_paths_for_method(
-                    con, sky_tif, "Plane or Road"
-                )
+            if road_cost is not None and plane_cost is not None:
+                if road_cost <= plane_cost and r_val:
+                    por_results.append(r_val)
+                else:
+                    por_results.append({
+                        "src": src_id, "dst": dst_id,
+                        "avg_friction": 1.0, "max_friction": 1.0,
+                        "path_length_miles": dist_mi,
+                    })
+            elif r_val:
+                por_results.append(r_val)
+            elif dist_mi:
+                por_results.append({
+                    "src": src_id, "dst": dst_id,
+                    "avg_friction": 1.0, "max_friction": 1.0,
+                    "path_length_miles": dist_mi,
+                })
 
-                # Pick lower avg_friction per edge
-                road_map = {
-                    (r["src"], r["dst"]): r for r in road_res
-                    if r["avg_friction"] is not None
-                }
-                plane_map = {
-                    (r["src"], r["dst"]): r for r in plane_res
-                    if r["avg_friction"] is not None
-                }
-
-                for key in set(road_map) | set(plane_map):
-                    r_val = road_map.get(key)
-                    p_val = plane_map.get(key)
-                    if r_val and p_val:
-                        winner = (r_val if r_val["avg_friction"]
-                                  <= p_val["avg_friction"] else p_val)
-                    elif r_val:
-                        winner = r_val
-                    elif p_val:
-                        winner = p_val
-                    else:
-                        continue
-                    por_results.append(winner)
-
-                # Only need to compute once, not per edge
-                all_results.extend(por_results)
-                break
+        all_results.extend(por_results)
+        if por_results:
+            print(f"  {len(por_results)} 'Plane or Road' edges resolved")
         else:
             print("  No 'Plane or Road' edges found")
 
-        # (h) Update graph
+        # (i) Update graph
         print("\n--- Updating graph with friction values ---")
         update_graph_friction(con, all_results)
 
-        # (i) Summary statistics
+        # (j) Summary statistics
         print("\n" + "=" * 60)
         print("SUMMARY")
         print("=" * 60)

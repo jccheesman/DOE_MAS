@@ -155,23 +155,11 @@ PORT_DECAY_PER_PIXEL = {
 }
 
 # ---------------------------------------------------------------------------
-# Airport access friction (Plane delivery)
+# Plane delivery
 # ---------------------------------------------------------------------------
-AIRPORT_FRICTION = {
-    "access": 1.0,           # airstrip available
-    "no_access": IMPASSABLE, # no airstrip
-}
-
-# ---------------------------------------------------------------------------
-# Plane MSA (Minimum Safe Altitude) -- FAA 14 CFR 91.177
-# ---------------------------------------------------------------------------
-# Terrain cells below MSA are impassable; above MSA get a flat friction
-PLANE_MSA_FEET = {
-    "non_mountainous": 1000,  # 1000 ft AGL
-    "mountainous": 2000,      # 2000 ft AGL (most of Alaska)
-}
-PLANE_FRICTION_ABOVE_MSA = 10.0   # flat cost for traversable airspace
-PLANE_FRICTION_BELOW_MSA = IMPASSABLE
+# Plane routes use direct Haversine distance (airport-to-airport) rather
+# than a cell-by-cell friction raster.  Cost = distance_miles × BASELINE_RATE.
+# No terrain friction surface is built for plane delivery.
 
 # ---------------------------------------------------------------------------
 # LULC friction for Barge delivery
