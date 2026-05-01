@@ -48,7 +48,7 @@ Several datasets can't be automated — download them to your computer first:
 
 ## Phase 1: GEE Preprocessing (Google Colab)
 
-**Goal:** Produce 6 aligned rasters + 3 vector files on Google Drive.
+**Goal:** Produce 6 aligned rasters + 2 NHD GeoJSON tables + 3 vector files on Google Drive.
 
 ### 1.1 Upload data files to Google Drive
 
@@ -98,6 +98,7 @@ These cells start **asynchronous** GEE export tasks. They return immediately but
 
 - **Cell 6 — LULC** (Dynamic World modal 2023)
 - **Cell 8 — DEM + Slope** (FabDEM)
+- **Cell 12 — NHD water polygons** (NHDWaterbody + NHDArea → GeoJSON table exports)
 - **Cell 14 — Roads presence** (GRIP4)
 
 After running each, you'll see `Export started: ...`. **Watch the GEE Tasks tab** (https://code.earthengine.google.com/tasks) to monitor progress — each task takes 5–15 minutes.
@@ -106,17 +107,17 @@ After running each, you'll see `Export started: ...`. **Watch the GEE Tasks tab*
 
 These process data locally on the Colab VM (not async):
 
-**Cell 10 — Permafrost (Pangaea):**
-- Downloads Obu et al. 2018 PERPROB (~100 MB)
-- Reprojects, clips, reclassifies to 4 zones
-- Saves at native 1 km resolution — needs Cell 12 to resample later
+**Cell 10 — Permafrost (Pastick et al. 2015):**
+- Loads Pastick 30m probability raster from Drive
+- Reprojects to EPSG:3413, clips to Alaska
+- Saves raw probability — Cell 12 resamples to 150m and reclassifies
 
-**Cell 16 — NWN navigable waterways:**
-- Extracts zip from Drive
-- Reprojects to EPSG:3413
-- Clips to Alaska boundary
+**Cell 16 — NHD + NWN navigable waterways:**
+- Loads NHD GeoJSON exports (from Cell 12) and NWN shapefile from Drive
+- Spatial join (`gpd.sjoin`): keeps NHD polygons that intersect NWN lines
+- Unions navigable NHD polygons with NWN lines (fallback for narrow channels)
 - Rasterizes to match the LULC reference grid
-- **Requires `lulc_alaska_modal.tif` to already be downloaded** — run this after Cell 6's GEE task completes
+- **Requires `lulc_alaska_modal.tif` and NHD GeoJSONs to be downloaded** — run after GEE exports complete
 
 **Cell 17/18 — Airports (OurAirports CSV):**
 - Loads `airports.csv` from Drive
