@@ -367,8 +367,8 @@ def query_delivery_costs() -> str:
 
 @tool("validate_costs_against_benchmarks")
 def validate_costs_against_benchmarks() -> str:
-    """Compare computed delivery costs against known ISER / AEA benchmark
-    data for Alaska fuel delivery.
+    """Compare computed delivery costs against Alaska fuel price benchmarks
+    from AEDG, DCRA Fuel Price Reports, and ISER/AEA studies.
 
     Checks cost reasonableness by region and delivery method, and derives
     calibration multipliers where computed costs deviate from benchmarks.
@@ -396,8 +396,12 @@ def validate_costs_against_benchmarks() -> str:
         ORDER BY li.region_name, um.method_name
     """).fetchdf()
 
-    # ISER / AEA benchmark ranges (approximate, $/gallon delivered)
-    # These are typical ranges from published Alaska energy cost reports
+    # Benchmark ranges ($/mile) from multiple Alaska energy cost sources:
+    #   - Alaska Energy Data Gateway (AEDG): akenergygateway.alaska.edu
+    #     Community-level fuel prices from ISER/UAA
+    #   - DCRA Alaska Fuel Price Reports (semi-annual surveys of ~100
+    #     communities): storymaps.arcgis.com/stories/6d6a33a3d9a74723a2f476c26ecfdf21
+    #   - ISER / AEA published energy cost studies
     benchmarks = {
         "Road":  {"low": 2.0, "mid": 3.5, "high": 5.0},
         "Barge": {"low": 1.0, "mid": 2.0, "high": 3.0},
@@ -643,18 +647,31 @@ def setup_agents(llm_haiku, llm_sonnet):
     validation_agent = Agent(
         role="Validation Agent",
         goal=(
-            "Validate computed delivery costs against known ISER / AEA "
-            "benchmark data for Alaska fuel delivery. Derive regional "
-            "calibration multipliers where computed costs deviate from "
-            "published benchmarks."
+            "Validate computed delivery costs against published Alaska "
+            "fuel price data from the Alaska Energy Data Gateway (AEDG), "
+            "DCRA Fuel Price Reports, and ISER/AEA studies. Derive "
+            "regional calibration multipliers where computed costs "
+            "deviate from observed community fuel prices."
         ),
         backstory=(
             "You are a research analyst at the Institute of Social and "
             "Economic Research (ISER) who has published extensively on "
-            "Alaska energy costs. You have deep knowledge of published "
-            "fuel delivery cost benchmarks by region and method. You "
-            "validate model outputs against real-world data and provide "
-            "calibration factors to improve accuracy."
+            "Alaska energy costs. You cross-reference model outputs "
+            "against multiple real-world data sources:\n"
+            "- Alaska Energy Data Gateway (akenergygateway.alaska.edu): "
+            "community-level fuel prices from ISER/UAA, covering "
+            "heating fuel and gasoline across hundreds of communities.\n"
+            "- DCRA Alaska Fuel Price Reports: semi-annual surveys of "
+            "~100 communities with current and historical fuel prices, "
+            "providing per-gallon costs that reflect total delivered "
+            "cost including transport, storage, and margins.\n"
+            "- ISER/AEA published benchmark studies on Alaska energy "
+            "costs by region and delivery method.\n"
+            "You understand that per-gallon community prices capture "
+            "total delivered cost, so comparing them to per-mile "
+            "computed costs requires accounting for route distance and "
+            "freight volume. You derive calibration factors to align "
+            "the friction-based cost model with observed prices."
         ),
         verbose=True,
         llm=llm_sonnet,
@@ -667,17 +684,27 @@ def setup_agents(llm_haiku, llm_sonnet):
 
     validation_task = Task(
         description=(
-            "Validate the computed delivery costs:\n"
+            "Validate the computed delivery costs against real-world "
+            "Alaska fuel price data:\n\n"
             "1. Use validate_costs_against_benchmarks to compare computed "
-            "costs against ISER/AEA benchmark data.\n"
+            "costs against benchmark data from:\n"
+            "   - Alaska Energy Data Gateway (akenergygateway.alaska.edu): "
+            "community-level heating fuel and gasoline prices\n"
+            "   - DCRA Alaska Fuel Price Reports: semi-annual surveys of "
+            "~100 communities with per-gallon fuel costs\n"
+            "   - ISER/AEA published Alaska energy cost studies\n\n"
             "2. Review the calibration multipliers for each region and method.\n"
+            "   Note: community fuel prices are per-gallon (total delivered "
+            "   cost) while computed costs are per-mile. To compare, consider "
+            "   that price differentials between communities on the same "
+            "   delivery route reflect the per-mile transport cost component.\n\n"
             "3. Flag regions where costs deviate more than 30%% from benchmarks.\n"
             "4. Use query_delivery_costs to get detailed cost breakdowns.\n"
             "5. Compile a final friction analysis report with:\n"
             "   - Friction criteria and weights table\n"
             "   - Seasonal adjustment summary\n"
             "   - Cost computation results\n"
-            "   - Benchmark validation results\n"
+            "   - Benchmark validation results citing AEDG and DCRA data\n"
             "   - Recommended calibration multipliers\n"
             f"6. Today's date is {date.today()}.\n"
             "7. Use save_friction_report to save the final report."

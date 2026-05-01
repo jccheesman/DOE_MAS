@@ -208,8 +208,11 @@ SEASONAL_MULTIPLIERS = {
 # ---------------------------------------------------------------------------
 # Baseline delivery cost rates ($ per friction-mile)
 # ---------------------------------------------------------------------------
-# These are initial estimates; the Validation Agent will derive
-# regional calibration multipliers from ISER / AEA benchmarks.
+# Initial estimates; the Validation Agent derives regional calibration
+# multipliers by comparing computed costs against community fuel prices from:
+#   - Alaska Energy Data Gateway (AEDG): akenergygateway.alaska.edu
+#   - DCRA Alaska Fuel Price Reports: storymaps.arcgis.com (semi-annual surveys)
+#   - ISER / AEA published Alaska energy cost studies
 BASELINE_RATES = {
     "Road":  3.5,   # mid-range of $2-5/mi
     "Barge": 2.0,   # mid-range of $1-3/mi
