@@ -77,7 +77,8 @@ def query_graph_facilities() -> str:
     result = graph_con.execute("""
         SELECT f.facility_id, f.longitude, f.latitude,
                li.region_name AS region,
-               COALESCE(um.method_name, 'Unassigned') AS delivery_method
+               COALESCE(um.method_name, 'Unassigned') AS delivery_method,
+               f.delivery_method_2 AS alternative_method
         FROM facilities f
         JOIN located_in li ON f.facility_id = li.facility_id
         LEFT JOIN uses_method um ON f.facility_id = um.facility_id

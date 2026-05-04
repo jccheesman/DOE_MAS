@@ -497,11 +497,13 @@ def compute_paths_for_method(con, friction_tif_path, method_name):
         list of dicts: [{src, dst, avg_friction, max_friction,
                          path_length_miles}, ...]
     """
-    # Fetch edges for this method
-    edges = con.execute(
-        "SELECT src, dst FROM connects_to WHERE method = ?",
-        [method_name],
-    ).fetchall()
+    # Fetch edges for this method via uses_method join
+    edges = con.execute("""
+        SELECT ct.src, ct.dst
+        FROM connects_to ct
+        JOIN uses_method um ON ct.src = um.facility_id
+        WHERE um.method_name = ?
+    """, [method_name]).fetchall()
 
     if not edges:
         print(f"No edges for method '{method_name}'")
@@ -666,10 +668,12 @@ def main(con=None):
         f. For Road and Barge, compute least-cost paths via WhiteboxTools.
         g. For Plane, set avg_friction=1.0 and path_length_miles=distance_miles
            (direct Haversine — planes fly airport-to-airport, not cell-by-cell).
-        h. Handle "Plane or Road" hybrid: compare Road friction cost against
-           Haversine × plane rate, pick the cheaper option.
-        i. Update graph with friction values.
-        j. Print summary statistics.
+        h. Update graph with friction values.
+        i. Print summary statistics.
+
+    Compound delivery methods ("Plane or Barge", "Plane or Road") are resolved
+    to a single method during regionalization. By the time this module runs,
+    every facility has exactly one method in uses_method.
 
     Args:
         con: Optional existing DuckDB connection.  If None, one is created.
@@ -724,71 +728,22 @@ def main(con=None):
 
         # (g) Plane: direct Haversine distance (no friction surface)
         print("\n--- Setting Plane edges to direct Haversine distance ---")
-        n_plane = con.execute("""
+        con.execute("""
             UPDATE connects_to
             SET avg_friction = 1.0,
                 max_friction = 1.0,
                 path_length_miles = distance_miles
-            WHERE method = 'Plane'
+            WHERE src IN (SELECT facility_id FROM uses_method WHERE method_name = 'Plane')
               AND distance_miles IS NOT NULL
-        """).fetchone()
-        plane_count = con.execute(
-            "SELECT COUNT(*) FROM connects_to "
-            "WHERE method = 'Plane' AND avg_friction IS NOT NULL"
-        ).fetchone()[0]
+        """)
+        plane_count = con.execute("""
+            SELECT COUNT(*) FROM connects_to ct
+            JOIN uses_method um ON ct.src = um.facility_id
+            WHERE um.method_name = 'Plane' AND ct.avg_friction IS NOT NULL
+        """).fetchone()[0]
         print(f"  {plane_count} Plane edges set to Haversine distance")
 
-        # (h) Handle "Plane or Road" hybrid: compare Road friction cost
-        # against direct Haversine × plane rate, pick the cheaper option
-        print("\n--- Computing 'Plane or Road' paths ---")
-        road_tif = method_raster_map["Road"]
-        road_res = compute_paths_for_method(con, road_tif, "Plane or Road")
-
-        plane_rate = fc.BASELINE_RATES.get("Plane", 11.5)
-        road_rate = fc.BASELINE_RATES.get("Road", 3.5)
-
-        por_edges = con.execute(
-            "SELECT src, dst, distance_miles FROM connects_to "
-            "WHERE method = 'Plane or Road'"
-        ).fetchall()
-
-        por_results = []
-        road_map = {
-            (r["src"], r["dst"]): r for r in road_res
-            if r["avg_friction"] is not None
-        }
-        for src_id, dst_id, dist_mi in por_edges:
-            key = (src_id, dst_id)
-            r_val = road_map.get(key)
-            road_cost = (r_val["avg_friction"] * r_val["path_length_miles"]
-                         * road_rate if r_val else None)
-            plane_cost = dist_mi * plane_rate if dist_mi else None
-
-            if road_cost is not None and plane_cost is not None:
-                if road_cost <= plane_cost and r_val:
-                    por_results.append(r_val)
-                else:
-                    por_results.append({
-                        "src": src_id, "dst": dst_id,
-                        "avg_friction": 1.0, "max_friction": 1.0,
-                        "path_length_miles": dist_mi,
-                    })
-            elif r_val:
-                por_results.append(r_val)
-            elif dist_mi:
-                por_results.append({
-                    "src": src_id, "dst": dst_id,
-                    "avg_friction": 1.0, "max_friction": 1.0,
-                    "path_length_miles": dist_mi,
-                })
-
-        all_results.extend(por_results)
-        if por_results:
-            print(f"  {len(por_results)} 'Plane or Road' edges resolved")
-        else:
-            print("  No 'Plane or Road' edges found")
-
-        # (i) Update graph
+        # (h) Update graph
         print("\n--- Updating graph with friction values ---")
         update_graph_friction(con, all_results)
 

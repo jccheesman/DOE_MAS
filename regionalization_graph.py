@@ -149,7 +149,8 @@ def init_duckdb_graph():
             facility_id INTEGER PRIMARY KEY,
             longitude DOUBLE,
             latitude DOUBLE,
-            delivery_method VARCHAR,
+            delivery_method_1 VARCHAR,
+            delivery_method_2 VARCHAR,
             community_name VARCHAR,
             x_3413 DOUBLE,
             y_3413 DOUBLE
@@ -289,6 +290,27 @@ def load_regions_into_db(shapefile_path, region_column, con):
 
 
 # ---------------------------------------------------------------------------
+# Delivery Method Resolution
+# ---------------------------------------------------------------------------
+
+def _resolve_delivery_method(raw_method):
+    """Parse compound delivery method, resolve to cheapest option.
+
+    Returns (dm1, dm2) where dm1 is the resolved (cheaper) method and dm2 is
+    the alternative (NULL if single method).
+    """
+    if raw_method is None:
+        return None, None
+    if ' or ' in raw_method:
+        parts = [p.strip() for p in raw_method.split(' or ')]
+        # Rank by baseline cost per mile: Barge($2) < Road($3.5) < Plane($11.5)
+        COST_RANK = {'Barge': 2.0, 'Road': 3.5, 'Plane': 11.5}
+        parts.sort(key=lambda p: COST_RANK.get(p, 999))
+        return parts[0], parts[1]
+    return raw_method, None
+
+
+# ---------------------------------------------------------------------------
 # Spatial Join + Graph Loading
 # ---------------------------------------------------------------------------
 
@@ -358,16 +380,19 @@ def group_sites_by_region(bulk_fuel_csv_path, shapefile_path, region_column, con
         region_value = row.get(region_column, None)
         longitude = row['ASTFacilityLongitude']
         latitude = row['ASTFacilityLatitude']
-        delivery_method = row.get('Delivery_method', None)
+        raw_delivery_method = row.get('Delivery_method', None)
         community_name = row.get('CommunityName', None)
 
         # Handle NaN values
         if pd.isna(region_value):
             region_value = None
-        if pd.isna(delivery_method):
-            delivery_method = None
+        if pd.isna(raw_delivery_method):
+            raw_delivery_method = None
         if pd.isna(community_name):
             community_name = None
+
+        # Resolve compound delivery methods (e.g. "Plane or Barge" → "Barge")
+        dm1, dm2 = _resolve_delivery_method(raw_delivery_method)
 
         # Insert facility into DuckDB (skip duplicates from spatial join)
         existing_facility = con.execute(
@@ -376,24 +401,24 @@ def group_sites_by_region(bulk_fuel_csv_path, shapefile_path, region_column, con
         ).fetchone()
         if not existing_facility:
             con.execute(
-                "INSERT INTO facilities VALUES (?, ?, ?, ?, ?)",
-                [facility_id, longitude, latitude, delivery_method, community_name]
+                "INSERT INTO facilities VALUES (?, ?, ?, ?, ?, ?)",
+                [facility_id, longitude, latitude, dm1, dm2, community_name]
             )
 
-            # Insert delivery_method node and uses_method edge
-            if delivery_method is not None:
+            # Insert resolved delivery_method node and uses_method edge
+            if dm1 is not None:
                 existing_method = con.execute(
                     "SELECT 1 FROM delivery_methods WHERE method_name = ?",
-                    [delivery_method]
+                    [dm1]
                 ).fetchone()
                 if not existing_method:
                     con.execute(
                         "INSERT INTO delivery_methods VALUES (?)",
-                        [delivery_method]
+                        [dm1]
                     )
                 con.execute(
                     "INSERT INTO uses_method VALUES (?, ?)",
-                    [facility_id, delivery_method]
+                    [facility_id, dm1]
                 )
 
         # Insert located_in edge
@@ -581,7 +606,7 @@ def query_facilities_in_region(con, region_name):
     """
     result = con.execute("""
         SELECT f.facility_id, f.longitude, f.latitude,
-               f.delivery_method, f.community_name
+               f.delivery_method_1, f.delivery_method_2, f.community_name
         FROM facilities f
         JOIN located_in li ON f.facility_id = li.facility_id
         WHERE li.region_name = ?
@@ -775,9 +800,9 @@ def add_new_delivery_methods(facility_id: int, delivery_method: str, region: str
     con.execute("DELETE FROM uses_method WHERE facility_id = ?", [facility_id])
     # Insert new assignment
     con.execute("INSERT INTO uses_method VALUES (?, ?)", [facility_id, delivery_method])
-    # Also update the delivery_method column on the facility node
+    # Also update the delivery_method_1 column on the facility node
     con.execute(
-        "UPDATE facilities SET delivery_method = ? WHERE facility_id = ?",
+        "UPDATE facilities SET delivery_method_1 = ? WHERE facility_id = ?",
         [delivery_method, facility_id]
     )
     con.close()
@@ -812,17 +837,6 @@ def update_facility_dictionary(new_dict: str) -> str:
     global final_regionalized_dict
     final_regionalized_dict = json.loads(new_dict)
     return "Dictionary updated successfully"
-
-
-@tool("save_json")
-def save_json(json_report: str):
-    """Function to save the logistics assessment report as a JSON file.
-
-    Args:
-        json_report (str): A JSON string containing the assessment report
-    """
-    with open('logistics_report.json', 'w') as f:
-        json.dump(json_report, f, indent=4)
 
 
 def save_as_csv():
@@ -871,6 +885,10 @@ delivery_task = Task(
     Do not infer or assume delivery methods beyond what is present in the data.
     Only assign delivery methods that already exist in the dataset (Road, Barge, Plane).
 
+    NOTE: Compound delivery methods (e.g., 'Plane or Barge', 'Plane or Road') have already been
+    resolved to a single method during data loading. The facilities table retains the alternative
+    method in delivery_method_2 for reference. You do NOT need to resolve compound methods.
+
     Complete the following tasks:
     1. Analyze the dictionary to ensure each site has a delivery method specified.
         a. If sites are listed under 'Unassigned' (no delivery method):
@@ -879,103 +897,15 @@ delivery_task = Task(
           - If the region has mixed methods, assign based on geographic proximity patterns
           - Call add_new_delivery_methods(facility_id=<id>, delivery_method=<method>, region=<region>)
             for each facility that needs assignment.
-        b. If sites have multiple delivery methods (e.g., 'Plane or Barge', 'Plane or Road'):
-          - Resolve to a single delivery method using cost-risk analysis.
-          - Consider these cost factors per mile: Road ~$2-5, Barge ~$1-3, Plane ~$8-15.
-          - Consider these risk factors: weather/ice impact on barges, road conditions for trucks, visibility for planes.
-          - Consider the site's geographic context (coastal sites may favor barge, inland sites may favor road).
-          - Assign the single most cost-effective and lowest-risk method.
-          - Call add_new_delivery_methods(facility_id=<id>, delivery_method=<method>, region=<region>)
-            with the chosen single method.
     2. Once complete, use get_facility_dictionary again to retrieve the updated data and return it
        using the update_facility_dictionary tool.""",
     agent=delivery_method_agent,
     expected_output=
     '''In JSON format:
     - The complete modified dictionary with all delivery methods assigned
-    - Summary of each newly added delivery method (if no delivery method was present).
-    - Summary of each resolved multi-method site, showing the original methods and the single method chosen with brief reasoning.''',
+    - Summary of each newly added delivery method (if no delivery method was present).''',
     verbose=True
 )
-
-# Agent - Logistics Coordinator
-logistics_agent = Agent(
-    role="Logistics Coordinator",
-    goal="Provide a high-level assessment of whether each route grouping is realistic and practical for Alaska fuel delivery operations.",
-    backstory='''Expert in Alaska's geography and logistics with practical experience in fuel delivery
-    operations. Knows the general operational limits of road, plane, and barge delivery methods in Alaska's
-    unique environment. Provides straightforward assessments of whether route groupings make practical sense
-    based on distance, geography, and delivery method capabilities. Grounds all assessments in the actual
-    facility data — references real facility counts, coordinates, and delivery methods from the dataset
-    rather than making assumptions.''',
-    verbose=True,
-    llm=llm_haiku,
-    tools=[save_json]
-)
-
-logistics_task = Task(
-    description="""
-    Review the updated dictionary provided in the previous task:{final_regionalized_dict}
-
-    IMPORTANT: Ground your assessment in the actual data provided. Reference specific facility
-    counts, coordinates, and delivery methods from the dictionary. Do not assume or fabricate
-    details about regions, sites, or routes that are not present in the data.
-
-    For each grouping (e.g., 'Road - Railbelt', 'Plane - North Slope'),
-    provide a general assessment of whether the grouping is realistic and practical.
-
-    Consider:
-    - Is the geographic area too large for a single route with this delivery method?
-    - Does the delivery method make sense for the distances and terrain involved?
-    - Are there obvious geographic or logistical issues that would make this grouping impractical?
-
-    Keep the assessment general and straightforward - focus on obvious concerns rather than
-    detailed logistics planning. Flag groupings that seem problematic and suggest simple
-    improvements where needed.
-
-    Structure your response as a valid JSON object, then use the 'save_json' tool
-    to save it. Pass your complete JSON object (as a string) to the save_json tool.""",
-    agent=logistics_agent,
-    context=[delivery_task],
-    expected_output="""
-    A concise assessment report containing:
-
-    1. Overall Assessment:
-       - Brief evaluation of each delivery_method-region grouping
-       - Simple status for each: "Looks Good", "May Need Review", or "Likely Too Large"
-       - High-level reasoning for any concerns
-
-    2. Key Recommendations:
-       - List groupings that appear unrealistic or too broad
-       - General suggestions for improvement (e.g., "Consider splitting this region into 2-3 smaller areas")
-       - Any obvious mismatches between delivery method and geography
-
-    3. Summary:
-       - How many groupings seem practical?
-       - How many may need adjustments?
-       - General confidence level in the current grouping structure
-
-    Format: In a JSON format create a clear, readable summary focusing on practical applicability rather than detailed logistics.
-
-    A JSON object with this exact structure:
-    {{
-        "overall_assessment": {{
-            "Road - Railbelt": {{"status": "Looks Good", "reasoning": "..."}},
-            "Plane - North Slope": {{"status": "May Need Review", "reasoning": "..."}}
-        }},
-        "key_recommendations": [
-            "Recommendation 1",
-            "Recommendation 2"
-        ],
-        "summary": {{
-            "practical_groupings": 5,
-            "needs_adjustments": 2,
-            "confidence_level": "High"
-        }}
-    }}""",
-    verbose=True
-)
-
 
 # ---------------------------------------------------------------------------
 # Main Execution
@@ -1012,14 +942,14 @@ def run_regionalization(bulk_fuel_csv_path, shapefile_path, region_column=None):
     plot_by_regions(duckdb_con)
     _build_dict_from_graph(duckdb_con)
 
-    # Step 7: Run CrewAI (resolves multi-method sites and assigns missing delivery methods)
+    # Step 7: Run CrewAI (assigns missing delivery methods)
     # Agents now read/write directly to the graph DB via tools.
     print("Running CrewAI approach...")
     print("=" * 50)
 
     crew = Crew(
-        agents=[delivery_method_agent, logistics_agent],
-        tasks=[delivery_task, logistics_task],
+        agents=[delivery_method_agent],
+        tasks=[delivery_task],
         process=Process.sequential,
         verbose=True
     )
