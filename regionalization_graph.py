@@ -401,7 +401,9 @@ def group_sites_by_region(bulk_fuel_csv_path, shapefile_path, region_column, con
         ).fetchone()
         if not existing_facility:
             con.execute(
-                "INSERT INTO facilities VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT INTO facilities (facility_id, longitude, latitude, "
+                "delivery_method_1, delivery_method_2, community_name) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
                 [facility_id, longitude, latitude, dm1, dm2, community_name]
             )
 

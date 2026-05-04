@@ -272,10 +272,10 @@ def get_regional_cities(con):
     rows = con.execute("""
         SELECT f.facility_id, f.longitude, f.latitude,
                li.region_name,
-               COALESCE(um.method_name, 'Unknown') AS method
+               um.method_name AS method
         FROM facilities f
         JOIN located_in li ON f.facility_id = li.facility_id
-        LEFT JOIN uses_method um ON f.facility_id = um.facility_id
+        JOIN uses_method um ON f.facility_id = um.facility_id
         WHERE li.region_name != 'Unassigned'
         ORDER BY li.region_name, method
     """).fetchall()
@@ -513,7 +513,7 @@ def plot_regional_tours(con, results):
             # Color by delivery method
             color_map = {
                 'Road': 'orange', 'Plane': 'blue', 'Barge': 'green',
-                'Plane or Road': 'purple', 'Unknown': 'black', 'NaN': 'black'
+                'Unknown': 'black', 'NaN': 'black'
             }
             color = color_map.get(group_name, 'gray')
 
@@ -626,7 +626,7 @@ def visualize_final_graph(con):
     route_edge_colors = []
     method_color_map = {
         'Road': 'orange', 'Plane': 'blue', 'Barge': 'green',
-        'Plane or Road': 'purple', 'Unknown': 'black'
+        'Unknown': 'black'
     }
 
     for _, row in routes_df.iterrows():

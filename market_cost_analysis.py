@@ -201,7 +201,8 @@ def save_report(json_report: str) -> str:
         json_report: A JSON string containing the analysis report
     """
     with open('market_cost_analysis_report.json', 'w') as f:
-        json.dump(json_report, f, indent=4)
+        parsed = json.loads(json_report)
+        json.dump(parsed, f, indent=4)
     return "Report saved to market_cost_analysis_report.json"
 
 

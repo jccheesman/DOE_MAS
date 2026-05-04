@@ -747,7 +747,7 @@ def main(con=None):
         print("\n--- Updating graph with friction values ---")
         update_graph_friction(con, all_results)
 
-        # (j) Summary statistics
+        # (i) Summary statistics
         print("\n" + "=" * 60)
         print("SUMMARY")
         print("=" * 60)
