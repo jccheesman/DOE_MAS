@@ -193,6 +193,43 @@ SEASONAL_MULTIPLIERS = {
     ("marginal_sea_ice", "winter"):   IMPASSABLE,
 }
 
+# Regional overrides: (region, feature_type, season) -> multiplier
+# Overrides SEASONAL_MULTIPLIERS when a facility is in the given region.
+# Regions without overrides fall back to the global defaults above.
+REGIONAL_SEASONAL_OVERRIDES = {
+    # Southeast: temperate maritime climate, ice-free waters year-round
+    ("Southeast", "major_river", "shoulder"):        1.1,
+    ("Southeast", "major_river", "winter"):          1.3,
+    ("Southeast", "sea_ice", "shoulder"):            1.1,
+    ("Southeast", "sea_ice", "winter"):              1.4,
+    ("Southeast", "marginal_sea_ice", "shoulder"):   1.2,
+    ("Southeast", "marginal_sea_ice", "winter"):     1.5,
+
+    # Kodiak: mild maritime climate, limited ice impact
+    ("Kodiak", "major_river", "shoulder"):           1.2,
+    ("Kodiak", "major_river", "winter"):             1.8,
+    ("Kodiak", "sea_ice", "shoulder"):               1.2,
+    ("Kodiak", "sea_ice", "winter"):                 2.0,
+    ("Kodiak", "marginal_sea_ice", "shoulder"):      1.3,
+    ("Kodiak", "marginal_sea_ice", "winter"):        2.5,
+
+    # Aleutians: maritime but exposed, some winter navigability
+    ("Aleutians", "sea_ice", "shoulder"):            1.3,
+    ("Aleutians", "sea_ice", "winter"):              2.0,
+    ("Aleutians", "marginal_sea_ice", "shoulder"):   1.5,
+    ("Aleutians", "marginal_sea_ice", "winter"):     3.0,
+
+    # Copper River Chugach: coastal portions navigable longer
+    ("Copper River Chugach", "sea_ice", "shoulder"): 1.3,
+    ("Copper River Chugach", "sea_ice", "winter"):   2.5,
+
+    # Bristol Bay: short ice-free window, harsh shoulder/winter
+    ("Bristol Bay", "sea_ice", "shoulder"):           1.8,
+    ("Bristol Bay", "sea_ice", "winter"):             IMPASSABLE,
+    ("Bristol Bay", "major_river", "shoulder"):       1.5,
+    ("Bristol Bay", "major_river", "winter"):         IMPASSABLE,
+}
+
 # ---------------------------------------------------------------------------
 # Baseline delivery cost rates ($ per friction-mile)
 # ---------------------------------------------------------------------------

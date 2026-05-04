@@ -140,6 +140,15 @@ def query_friction_stats() -> str:
 # Tools — Seasonal Enhancer
 # ===========================================================================
 
+def _get_seasonal_mult(region, feature, season):
+    """Look up seasonal multiplier with regional override fallback."""
+    override = friction_config.REGIONAL_SEASONAL_OVERRIDES.get(
+        (region, feature, season))
+    if override is not None:
+        return override
+    return friction_config.SEASONAL_MULTIPLIERS.get(
+        (feature, season), 1.0)
+
 @tool("apply_seasonal_multipliers")
 def apply_seasonal_multipliers() -> str:
     """Apply seasonal multipliers to avg_friction for all connects_to edges.
@@ -154,39 +163,36 @@ def apply_seasonal_multipliers() -> str:
     """
     global graph_con
 
-    # Read all edges with their delivery method and friction
+    # Read all edges with their delivery method, friction, and region
     edges = graph_con.execute("""
         SELECT ct.src, ct.dst, ct.avg_friction,
-               COALESCE(um.method_name, 'Road') AS method
+               COALESCE(um.method_name, 'Road') AS method,
+               li.region_name
         FROM connects_to ct
         JOIN uses_method um ON ct.src = um.facility_id
+        JOIN located_in li ON ct.src = li.facility_id
         WHERE ct.avg_friction IS NOT NULL
     """).fetchall()
 
     updated = 0
-    for src, dst, avg_friction, method in edges:
+    for src, dst, avg_friction, method, region in edges:
         if avg_friction is None:
             continue
 
-        # Determine seasonal multipliers based on delivery method
+        # Determine seasonal multipliers based on delivery method and region
         if method == 'Barge':
-            # Barge routes are affected by river/sea ice seasonality
-            summer_mult = friction_config.SEASONAL_MULTIPLIERS.get(
-                ("major_river", "summer"), 1.0)
-            shoulder_mult = friction_config.SEASONAL_MULTIPLIERS.get(
-                ("major_river", "shoulder"), 1.3)
-            winter_mult = friction_config.SEASONAL_MULTIPLIERS.get(
-                ("major_river", "winter"), friction_config.IMPASSABLE)
+            feature = "major_river"
+            summer_mult = _get_seasonal_mult(region, feature, "summer")
+            shoulder_mult = _get_seasonal_mult(region, feature, "shoulder")
+            winter_mult = _get_seasonal_mult(region, feature, "winter")
         elif method == 'Plane':
-            # Plane routes are less affected by seasonality
             summer_mult = 1.0
             shoulder_mult = 1.0
             winter_mult = 1.0
         else:
-            # Road routes: minor seasonal impact
             summer_mult = 1.0
-            shoulder_mult = 1.1  # slight increase for shoulder season
-            winter_mult = 1.3   # winter road conditions
+            shoulder_mult = 1.1
+            winter_mult = 1.3
 
         friction_summer = avg_friction * summer_mult
         friction_shoulder = avg_friction * shoulder_mult
