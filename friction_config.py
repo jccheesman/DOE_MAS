@@ -28,6 +28,52 @@ TARGET_RESOLUTION = 150    # metres, following Trochim et al.
 IMPASSABLE = 999
 
 # ---------------------------------------------------------------------------
+# Friction nodata sentinel (true barrier for WhiteboxTools cost_distance)
+# ---------------------------------------------------------------------------
+FRICTION_NODATA = -9999.0
+
+# ---------------------------------------------------------------------------
+# Water type codes (pixel-level classification for seasonal surfaces)
+# ---------------------------------------------------------------------------
+WATER_TYPE_LAND              = 0
+WATER_TYPE_RIVER             = 1
+WATER_TYPE_SEASONALLY_FROZEN = 2   # >70% climatological winter ice concentration
+WATER_TYPE_SEASONALLY_MARGINAL = 3 # 20-70% climatological winter ice concentration
+WATER_TYPE_OPEN              = 4   # <20% ice, navigable year-round by default
+
+# Water type -> feature name for seasonal multiplier lookup
+WATER_TYPE_FEATURES = {
+    WATER_TYPE_RIVER:              "major_river",
+    WATER_TYPE_SEASONALLY_FROZEN:  "sea_ice",
+    WATER_TYPE_SEASONALLY_MARGINAL: "marginal_sea_ice",
+    WATER_TYPE_OPEN:               "open_water",
+}
+
+# ---------------------------------------------------------------------------
+# Sea ice classification thresholds (climatological winter concentration %)
+# ---------------------------------------------------------------------------
+SEA_ICE_THRESHOLDS = {
+    "sea_ice":          70.0,   # >70% -> seasonally frozen
+    "marginal_sea_ice": 20.0,   # 20-70% -> seasonally marginal
+}
+
+# ---------------------------------------------------------------------------
+# Region ID mapping (integer codes in regions_alaska.tif -> region names)
+# ---------------------------------------------------------------------------
+REGION_IDS = {
+    1: "Southeast",
+    2: "Kodiak",
+    3: "Aleutians",
+    4: "Copper River Chugach",
+    5: "Bristol Bay",
+    6: "Yukon-Kuskokwim Delta",
+    7: "Interior",
+    8: "Northwest Arctic",
+    9: "North Slope",
+    10: "Railbelt",
+}
+
+# ---------------------------------------------------------------------------
 # Slope friction (Road delivery only)
 # ---------------------------------------------------------------------------
 # Thresholds in degrees
@@ -191,6 +237,11 @@ SEASONAL_MULTIPLIERS = {
     ("marginal_sea_ice", "summer"):   1.0,
     ("marginal_sea_ice", "shoulder"): 2.0,
     ("marginal_sea_ice", "winter"):   IMPASSABLE,
+
+    # Open water (<20% climatological ice, navigable year-round by default)
+    ("open_water", "summer"):   1.0,
+    ("open_water", "shoulder"): 1.0,
+    ("open_water", "winter"):   1.0,
 }
 
 # Regional overrides: (region, feature_type, season) -> multiplier
@@ -265,6 +316,8 @@ RASTER_FILES = {
     "roads_presence":    os.path.join(RASTER_DIR, "roads_presence_alaska.tif"),
     "rivers":            os.path.join(RASTER_DIR, "rivers_alaska.tif"),
     "dem":               os.path.join(RASTER_DIR, "dem_alaska.tif"),
+    "sea_ice":           os.path.join(RASTER_DIR, "sea_ice_concentration_alaska.tif"),
+    "regions":           os.path.join(RASTER_DIR, "regions_alaska.tif"),
 }
 
 VECTOR_FILES = {

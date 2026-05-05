@@ -160,6 +160,92 @@ def build_lulc_permafrost_friction(lulc, permafrost):
 
 
 # =========================================================================
+# 3b. Classify water type per pixel
+# =========================================================================
+
+def classify_water_type(rasters):
+    """Classify each pixel into a water type code for seasonal multiplier lookup.
+
+    Returns:
+        np.ndarray (int8) -- water type codes from friction_config.WATER_TYPE_*.
+    """
+    lulc = rasters["lulc"][0]
+    rivers = rasters["rivers"][0]
+    sea_ice = rasters["sea_ice"][0]
+    sea_ice_profile = rasters["sea_ice"][1]
+    sea_ice_nodata = sea_ice_profile.get("nodata", -9999)
+
+    out = np.zeros(lulc.shape, dtype=np.int8)
+
+    water = (lulc.astype(int) == 0)
+    out[water] = fc.WATER_TYPE_OPEN
+
+    out[rivers.astype(int) == 1] = fc.WATER_TYPE_RIVER
+
+    # Pixels with <20% ice stay WATER_TYPE_OPEN (navigable year-round by default)
+    non_river_water = water & (out != fc.WATER_TYPE_RIVER)
+    ice_valid = non_river_water & (sea_ice >= 0)
+    if sea_ice_nodata is not None:
+        ice_valid = ice_valid & (sea_ice != sea_ice_nodata)
+
+    frozen = ice_valid & (sea_ice > fc.SEA_ICE_THRESHOLDS["sea_ice"])
+    marginal = (ice_valid
+                & (sea_ice > fc.SEA_ICE_THRESHOLDS["marginal_sea_ice"])
+                & (sea_ice <= fc.SEA_ICE_THRESHOLDS["sea_ice"]))
+
+    out[frozen] = fc.WATER_TYPE_SEASONALLY_FROZEN
+    out[marginal] = fc.WATER_TYPE_SEASONALLY_MARGINAL
+
+    return out
+
+
+# =========================================================================
+# 3c. Build season-specific barge friction surface
+# =========================================================================
+
+def build_friction_barge_seasonal(rasters, season, water_type=None):
+    """Build a season-specific barge friction surface.
+
+    Each water pixel gets: base_friction * seasonal_mult(water_type, region, season).
+    Pixels where the multiplier is IMPASSABLE become np.nan (true barrier).
+
+    Args:
+        rasters: dict from load_rasters().
+        season: one of "summer", "shoulder", "winter".
+        water_type: optional precomputed water type array (avoids recomputation).
+
+    Returns:
+        np.ndarray (float32) -- seasonal barge friction, np.nan = barrier.
+    """
+    base = build_friction_barge(rasters)
+
+    if water_type is None:
+        water_type = classify_water_type(rasters)
+
+    region_arr = rasters["regions"][0].astype(int)
+    multiplier = np.ones_like(base, dtype=np.float32)
+
+    for wt_code, feature_name in fc.WATER_TYPE_FEATURES.items():
+        wt_mask = (water_type == wt_code)
+
+        global_mult = fc.SEASONAL_MULTIPLIERS.get((feature_name, season), 1.0)
+        multiplier[wt_mask] = global_mult
+
+        for region_id, region_name in fc.REGION_IDS.items():
+            override = fc.REGIONAL_SEASONAL_OVERRIDES.get(
+                (region_name, feature_name, season))
+            if override is not None:
+                multiplier[wt_mask & (region_arr == region_id)] = override
+
+    out = base * multiplier
+
+    impassable = (multiplier >= fc.IMPASSABLE) | (base >= fc.IMPASSABLE)
+    out[impassable] = np.nan
+
+    return out
+
+
+# =========================================================================
 # 4. Build road friction surface
 # =========================================================================
 
@@ -312,12 +398,13 @@ def build_friction_barge(rasters):
 # rather than a cell-by-cell friction surface.  Plane edges are populated
 # with avg_friction=1.0 and path_length_miles=distance_miles in main().
 
-def save_friction_rasters(road, barge, profile, output_dir=None):
+def save_friction_rasters(road, barge_surfaces, profile, output_dir=None):
     """Write friction surfaces to GeoTIFF files.
 
     Args:
         road: 2-D array -- road friction surface.
-        barge: 2-D array -- barge friction surface.
+        barge_surfaces: dict {season: ndarray} for summer/shoulder/winter,
+            OR a single 2-D array (legacy single-surface mode).
         profile: rasterio profile dict (CRS, transform, etc.).
         output_dir: Directory for output files.  Defaults to raster_dir.
     """
@@ -326,15 +413,22 @@ def save_friction_rasters(road, barge, profile, output_dir=None):
     os.makedirs(output_dir, exist_ok=True)
 
     write_profile = profile.copy()
-    write_profile.update(dtype="float32", count=1, compress="lzw", nodata=-9999)
+    write_profile.update(dtype="float32", count=1, compress="lzw",
+                         nodata=fc.FRICTION_NODATA)
 
-    names = {"friction_road.tif": road,
-             "friction_barge.tif": barge}
+    names = {"friction_road.tif": road}
+    if isinstance(barge_surfaces, dict):
+        for season, arr in barge_surfaces.items():
+            names[f"friction_barge_{season}.tif"] = arr
+    else:
+        names["friction_barge.tif"] = barge_surfaces
 
     for fname, arr in names.items():
         path = os.path.join(output_dir, fname)
+        arr_out = np.where(np.isnan(arr), fc.FRICTION_NODATA,
+                           arr).astype(np.float32)
         with rasterio.open(path, "w", **write_profile) as dst:
-            dst.write(arr.astype(np.float32), 1)
+            dst.write(arr_out, 1)
         print(f"Saved {path}  ({arr.shape})")
 
 
@@ -397,15 +491,20 @@ def _extract_cost_at(cost_surface_path, x, y):
     return None
 
 
-def _sample_path_friction(backlink_path, friction_tif_path, dst_x, dst_y):
+def _sample_path_friction(backlink_path, friction_tif_path, dst_x, dst_y,
+                          water_type_arr=None):
     """Trace the cost pathway from destination back to source and sample
     friction values along it.
 
     Uses WhiteboxTools cost_pathway to produce a binary path raster, then
     samples the friction surface along that path.
 
+    Args:
+        water_type_arr: optional water type array for diagnostic fractions.
+
     Returns:
-        (waf, max_friction, path_length_miles) or (None, None, None)
+        (waf, max_friction, path_length_miles, diagnostics) where diagnostics
+        is a dict of water type fractions or None.
     """
     wbt = pipeline.get_whitebox_wbt()
     work_dir = wbt.get_working_dir() or tempfile.mkdtemp()
@@ -419,7 +518,7 @@ def _sample_path_friction(backlink_path, friction_tif_path, dst_x, dst_y):
     dst_arr = np.full((height, width), -9999, dtype=np.float32)
     r, c = rowcol(transform, dst_x, dst_y)
     if not (0 <= r < height and 0 <= c < width):
-        return None, None, None
+        return None, None, None, None
     dst_arr[r, c] = 0.0
 
     dst_profile = profile.copy()
@@ -438,10 +537,10 @@ def _sample_path_friction(backlink_path, friction_tif_path, dst_x, dst_y):
         )
     except Exception as e:
         print(f"  cost_pathway failed: {e}")
-        return None, None, None
+        return None, None, None, None
 
     if not os.path.exists(pathway_out):
-        return None, None, None
+        return None, None, None, None
 
     # Read path cells and sample friction
     with rasterio.open(pathway_out) as src:
@@ -461,13 +560,27 @@ def _sample_path_friction(backlink_path, friction_tif_path, dst_x, dst_y):
 
     n_cells = int(np.sum(path_mask))
     if n_cells == 0:
-        return None, None, None
+        return None, None, None, None
 
     sampled = friction_arr[path_mask]
     waf = float(np.mean(sampled))
     max_friction = float(np.max(sampled))
     path_length_m = n_cells * pixel_size
     path_length_miles = path_length_m / 1609.344
+
+    diagnostics = None
+    if water_type_arr is not None:
+        wt_along_path = water_type_arr[path_mask]
+        n = len(wt_along_path)
+        if n > 0:
+            diagnostics = {
+                "river_frac": float(
+                    np.sum(wt_along_path == fc.WATER_TYPE_RIVER) / n),
+                "sea_ice_frac": float(
+                    np.sum(wt_along_path == fc.WATER_TYPE_SEASONALLY_FROZEN) / n),
+                "marginal_frac": float(
+                    np.sum(wt_along_path == fc.WATER_TYPE_SEASONALLY_MARGINAL) / n),
+            }
 
     # Cleanup temp files
     for p in [dst_raster, pathway_out]:
@@ -477,10 +590,11 @@ def _sample_path_friction(backlink_path, friction_tif_path, dst_x, dst_y):
             except OSError:
                 pass
 
-    return waf, max_friction, path_length_miles
+    return waf, max_friction, path_length_miles, diagnostics
 
 
-def compute_paths_for_method(con, friction_tif_path, method_name):
+def compute_paths_for_method(con, friction_tif_path, method_name,
+                             season=None, water_type_arr=None):
     """Compute least-cost paths for all edges of a given delivery method.
 
     For each unique source facility:
@@ -492,10 +606,12 @@ def compute_paths_for_method(con, friction_tif_path, method_name):
         con: DuckDB connection.
         friction_tif_path: Path to the friction raster for this method.
         method_name: Delivery method name (e.g. "Road", "Barge", "Plane").
+        season: Optional season name (e.g. "summer"). Included in results.
+        water_type_arr: Optional water type array for diagnostic fractions.
 
     Returns:
         list of dicts: [{src, dst, avg_friction, max_friction,
-                         path_length_miles}, ...]
+                         path_length_miles, season, diagnostics}, ...]
     """
     # Fetch edges for this method via uses_method join
     edges = con.execute("""
@@ -572,7 +688,7 @@ def compute_paths_for_method(con, friction_tif_path, method_name):
             dx, dy = fac_coords[dst_id]
 
             acc_cost = _extract_cost_at(cost_out, dx, dy)
-            if acc_cost is None or acc_cost >= fc.IMPASSABLE * 0.9:
+            if acc_cost is None:
                 print(f"    {src_id} -> {dst_id}: unreachable")
                 results.append({
                     "src": src_id,
@@ -580,11 +696,14 @@ def compute_paths_for_method(con, friction_tif_path, method_name):
                     "avg_friction": None,
                     "max_friction": None,
                     "path_length_miles": None,
+                    "season": season,
+                    "diagnostics": None,
                 })
                 continue
 
-            waf, max_f, length_mi = _sample_path_friction(
-                backlink_out, friction_tif_path, dx, dy
+            waf, max_f, length_mi, diag = _sample_path_friction(
+                backlink_out, friction_tif_path, dx, dy,
+                water_type_arr=water_type_arr,
             )
 
             results.append({
@@ -593,6 +712,8 @@ def compute_paths_for_method(con, friction_tif_path, method_name):
                 "avg_friction": waf,
                 "max_friction": max_f,
                 "path_length_miles": length_mi,
+                "season": season,
+                "diagnostics": diag,
             })
 
         # Cleanup source-specific temp files
@@ -611,12 +732,17 @@ def compute_paths_for_method(con, friction_tif_path, method_name):
 # 9. Update graph with friction values
 # =========================================================================
 
-def update_graph_friction(con, results):
+def update_graph_friction(con, results, season=None):
     """Write friction values back to the connects_to edge table in DuckDB.
+
+    When season is provided, writes to friction_{season} column.
+    Also writes diagnostic fractions (river_frac, sea_ice_frac, marginal_frac)
+    suffixed by season when present.
 
     Args:
         con: DuckDB connection (read-write).
         results: list of dicts from compute_paths_for_method().
+        season: optional season name for seasonal column writes.
     """
     if not results:
         return
@@ -630,26 +756,71 @@ def update_graph_friction(con, results):
         ).fetchall()
     }
 
-    for col in ("avg_friction", "max_friction", "path_length_miles"):
+    base_cols = ["avg_friction", "max_friction", "path_length_miles"]
+    if season:
+        base_cols.append(f"friction_{season}")
+    diag_cols = []
+    if season in ("summer", "winter"):
+        diag_cols = [
+            f"river_frac_{season}",
+            f"sea_ice_frac_{season}",
+            f"marginal_frac_{season}",
+        ]
+
+    for col in base_cols + diag_cols:
         if col not in existing_cols:
             con.execute(
                 f"ALTER TABLE connects_to ADD COLUMN {col} DOUBLE"
             )
+            existing_cols.add(col)
 
     # Batch update
     for r in results:
         if r["avg_friction"] is None:
+            if season:
+                con.execute(
+                    f"UPDATE connects_to "
+                    f"SET friction_{season} = NULL "
+                    f"WHERE src = ? AND dst = ?",
+                    [r["src"], r["dst"]],
+                )
             continue
-        con.execute(
-            "UPDATE connects_to "
-            "SET avg_friction = ?, max_friction = ?, path_length_miles = ? "
-            "WHERE src = ? AND dst = ?",
-            [r["avg_friction"], r["max_friction"], r["path_length_miles"],
-             r["src"], r["dst"]],
-        )
+
+        if season:
+            con.execute(
+                f"UPDATE connects_to "
+                f"SET avg_friction = COALESCE(avg_friction, ?), "
+                f"    max_friction = COALESCE(max_friction, ?), "
+                f"    path_length_miles = COALESCE(path_length_miles, ?), "
+                f"    friction_{season} = ? "
+                f"WHERE src = ? AND dst = ?",
+                [r["avg_friction"], r["max_friction"], r["path_length_miles"],
+                 r["avg_friction"], r["src"], r["dst"]],
+            )
+        else:
+            con.execute(
+                "UPDATE connects_to "
+                "SET avg_friction = ?, max_friction = ?, path_length_miles = ? "
+                "WHERE src = ? AND dst = ?",
+                [r["avg_friction"], r["max_friction"], r["path_length_miles"],
+                 r["src"], r["dst"]],
+            )
+
+        diag = r.get("diagnostics")
+        if diag and season in ("summer", "winter"):
+            con.execute(
+                f"UPDATE connects_to "
+                f"SET river_frac_{season} = ?, "
+                f"    sea_ice_frac_{season} = ?, "
+                f"    marginal_frac_{season} = ? "
+                f"WHERE src = ? AND dst = ?",
+                [diag["river_frac"], diag["sea_ice_frac"],
+                 diag["marginal_frac"], r["src"], r["dst"]],
+            )
 
     n_updated = sum(1 for r in results if r["avg_friction"] is not None)
-    print(f"Updated {n_updated}/{len(results)} edges in connects_to")
+    label = f" ({season})" if season else ""
+    print(f"Updated {n_updated}/{len(results)} edges in connects_to{label}")
 
 
 # =========================================================================
@@ -700,30 +871,50 @@ def main(con=None):
         # Grab a reference profile for output
         ref_profile = rasters["lulc"][1]
 
-        # (d) Build friction surfaces (road and barge only)
+        # (d) Build friction surfaces
         print("\n--- Building road friction surface ---")
         friction_road = build_friction_road(rasters)
         print(f"  Range: [{friction_road.min():.2f}, {friction_road.max():.2f}]")
 
-        print("\n--- Building barge friction surface ---")
-        friction_barge = build_friction_barge(rasters)
-        print(f"  Range: [{friction_barge.min():.2f}, {friction_barge.max():.2f}]")
+        print("\n--- Building seasonal barge friction surfaces ---")
+        water_type = classify_water_type(rasters)
+        barge_surfaces = {}
+        for season in fc.SEASONS:
+            barge_surfaces[season] = build_friction_barge_seasonal(
+                rasters, season, water_type=water_type)
+            arr = barge_surfaces[season]
+            valid = arr[~np.isnan(arr)]
+            n_barrier = int(np.sum(np.isnan(arr)))
+            print(f"  {season}: valid=[{valid.min():.2f}, {valid.max():.2f}]  "
+                  f"barriers={n_barrier:,}")
 
         # (e) Save friction rasters
         print("\n--- Saving friction rasters ---")
-        save_friction_rasters(friction_road, friction_barge, ref_profile)
+        save_friction_rasters(friction_road, barge_surfaces, ref_profile)
 
-        # (f) Compute least-cost paths for Road and Barge
+        # (f) Compute least-cost paths
         raster_dir = pipeline.get_raster_dir()
-        method_raster_map = {
-            "Road":  os.path.join(raster_dir, "friction_road.tif"),
-            "Barge": os.path.join(raster_dir, "friction_barge.tif"),
-        }
 
+        # Road paths (unchanged)
         all_results = []
-        for method, raster_path in method_raster_map.items():
-            print(f"\n--- Computing {method} paths ---")
-            results = compute_paths_for_method(con, raster_path, method)
+        road_tif = os.path.join(raster_dir, "friction_road.tif")
+        print("\n--- Computing Road paths ---")
+        road_results = compute_paths_for_method(con, road_tif, "Road")
+        all_results.extend(road_results)
+        update_graph_friction(con, road_results)
+
+        # Barge paths per season
+        for season in fc.SEASONS:
+            barge_tif = os.path.join(raster_dir,
+                                     f"friction_barge_{season}.tif")
+            sample_diag = season in ("summer", "winter")
+            print(f"\n--- Computing Barge paths ({season}) ---")
+            results = compute_paths_for_method(
+                con, barge_tif, "Barge",
+                season=season,
+                water_type_arr=water_type if sample_diag else None,
+            )
+            update_graph_friction(con, results, season=season)
             all_results.extend(results)
 
         # (g) Plane: direct Haversine distance (no friction surface)
@@ -743,9 +934,7 @@ def main(con=None):
         """).fetchone()[0]
         print(f"  {plane_count} Plane edges set to Haversine distance")
 
-        # (h) Update graph
-        print("\n--- Updating graph with friction values ---")
-        update_graph_friction(con, all_results)
+        # (h) Graph already updated inline above
 
         # (i) Summary statistics
         print("\n" + "=" * 60)

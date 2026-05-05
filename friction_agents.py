@@ -27,10 +27,13 @@ Outputs:
 # ---------------------------------------------------------------------------
 import os
 import json
+import logging
 import warnings
 from datetime import date
 
 import duckdb
+
+logger = logging.getLogger(__name__)
 
 warnings.filterwarnings('ignore', category=DeprecationWarning)
 
@@ -175,16 +178,15 @@ def apply_seasonal_multipliers() -> str:
     """).fetchall()
 
     updated = 0
+    skipped_barge = 0
     for src, dst, avg_friction, method, region in edges:
         if avg_friction is None:
             continue
 
-        # Determine seasonal multipliers based on delivery method and region
+        # Barge: seasonal friction already populated from per-pixel surfaces
         if method == 'Barge':
-            feature = "major_river"
-            summer_mult = _get_seasonal_mult(region, feature, "summer")
-            shoulder_mult = _get_seasonal_mult(region, feature, "shoulder")
-            winter_mult = _get_seasonal_mult(region, feature, "winter")
+            skipped_barge += 1
+            continue
         elif method == 'Plane':
             summer_mult = 1.0
             shoulder_mult = 1.0
@@ -223,7 +225,8 @@ def apply_seasonal_multipliers() -> str:
     """).fetchdf()
 
     return (
-        f"Seasonal multipliers applied to {updated} edges.\n"
+        f"Seasonal multipliers applied to {updated} edges "
+        f"({skipped_barge} Barge edges already have per-pixel seasonal friction).\n"
         f"Summary:\n{summary.to_string(index=False)}"
     )
 
@@ -293,10 +296,15 @@ def compute_delivery_costs() -> str:
 
         cost_summer = f_summer * path_miles * rate
         cost_shoulder = f_shoulder * path_miles * rate
-        cost_winter = (
-            None if f_winter >= friction_config.IMPASSABLE
-            else f_winter * path_miles * rate
-        )
+        if f_winter is None or f_winter >= friction_config.IMPASSABLE:
+            if f_winter is not None and f_winter >= friction_config.IMPASSABLE:
+                logger.warning(
+                    "Edge %s->%s has f_winter=%s (finite IMPASSABLE). "
+                    "Expected NULL under nodata-barrier semantics.",
+                    src, dst, f_winter)
+            cost_winter = None
+        else:
+            cost_winter = f_winter * path_miles * rate
 
         # Base delivery cost uses summer (primary delivery season)
         delivery_cost = cost_summer

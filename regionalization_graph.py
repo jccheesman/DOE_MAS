@@ -213,6 +213,12 @@ def init_duckdb_graph():
             cost_winter DOUBLE,
             cost_fwd DOUBLE,
             cost_rev DOUBLE,
+            river_frac_summer DOUBLE,
+            sea_ice_frac_summer DOUBLE,
+            marginal_frac_summer DOUBLE,
+            river_frac_winter DOUBLE,
+            sea_ice_frac_winter DOUBLE,
+            marginal_frac_winter DOUBLE,
             PRIMARY KEY (src, dst)
         )
     """)
