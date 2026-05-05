@@ -39,8 +39,11 @@ import random
 import functools
 import itertools
 import duckdb
+import numpy as np
 import networkx as nx
 import matplotlib.pyplot as plt
+import matplotlib.collections as mcoll
+import matplotlib.colors as mcolors
 import geopandas as gpd
 from typing import Set, List, Tuple, Iterable, Callable, Dict
 
@@ -686,6 +689,311 @@ def visualize_final_graph(con):
     print(f"  Route edges: {route_stats[0]}")
     print(f"  Total routes: {route_stats[1]}")
     print(f"  Total route distance: {route_stats[2]} miles")
+
+
+# ===========================================================================
+# Directed Regional Maps (arrows on routes)
+# ===========================================================================
+
+def _load_alaska_boundary():
+    """Load Alaska state boundary as a GeoDataFrame (WGS84)."""
+    try:
+        url = ("https://www2.census.gov/geo/tiger/GENZ2018/shp/"
+               "cb_2018_us_state_20m.zip")
+        states = gpd.read_file(url)
+        return states[states['NAME'] == 'Alaska']
+    except Exception:
+        print("Could not load Alaska boundary from Census TIGER")
+        return None
+
+
+def plot_regional_directed_maps(con):
+    """Plot one map per region showing directed routes with arrows.
+
+    Each map shows:
+    - Alaska state boundary (light gray)
+    - Facility nodes colored by delivery method
+    - part_of_route edges as arrows (src -> dst) colored by method
+    - connects_to edges as faint background arrows
+
+    Saves to outputs/regional_directed_{region_name}.png
+    """
+    os.makedirs("outputs", exist_ok=True)
+
+    alaska = _load_alaska_boundary()
+
+    regions = con.execute("""
+        SELECT DISTINCT li.region_name
+        FROM located_in li
+        WHERE li.region_name != 'Unassigned'
+        ORDER BY li.region_name
+    """).fetchall()
+
+    method_colors = {
+        'Road': '#f58231', 'Plane': '#4363d8', 'Barge': '#3cb44b',
+        'Unknown': '#333333',
+    }
+
+    for (region_name,) in regions:
+        facilities = con.execute("""
+            SELECT f.facility_id, f.longitude, f.latitude,
+                   COALESCE(um.method_name, 'Unknown') AS method
+            FROM facilities f
+            JOIN located_in li ON f.facility_id = li.facility_id
+            LEFT JOIN uses_method um ON f.facility_id = um.facility_id
+            WHERE li.region_name = ?
+        """, [region_name]).fetchdf()
+
+        if facilities.empty:
+            continue
+
+        fids = set(facilities['facility_id'].astype(int))
+        fid_pos = {
+            int(r['facility_id']): (r['longitude'], r['latitude'])
+            for _, r in facilities.iterrows()
+        }
+        fid_method = {
+            int(r['facility_id']): r['method']
+            for _, r in facilities.iterrows()
+        }
+
+        routes = con.execute("""
+            SELECT pr.src, pr.dst, pr.route_id, pr.sequence
+            FROM part_of_route pr
+            WHERE pr.src IN (SELECT facility_id FROM located_in
+                             WHERE region_name = ?)
+            ORDER BY pr.route_id, pr.sequence
+        """, [region_name]).fetchdf()
+
+        connects = con.execute("""
+            SELECT ct.src, ct.dst
+            FROM connects_to ct
+            WHERE ct.src IN (SELECT facility_id FROM located_in
+                             WHERE region_name = ?)
+              AND ct.distance_miles <= 150
+        """, [region_name]).fetchdf()
+
+        fig, ax = plt.subplots(figsize=(14, 10))
+
+        if alaska is not None:
+            alaska.boundary.plot(ax=ax, color='#999999', linewidth=0.5,
+                                zorder=0)
+
+        # Background: connects_to as faint arrows
+        for _, row in connects.iterrows():
+            src, dst = int(row['src']), int(row['dst'])
+            if src in fid_pos and dst in fid_pos:
+                x0, y0 = fid_pos[src]
+                x1, y1 = fid_pos[dst]
+                ax.annotate("", xy=(x1, y1), xytext=(x0, y0),
+                            arrowprops=dict(arrowstyle="-|>", color='#cccccc',
+                                            lw=0.5, mutation_scale=6),
+                            zorder=1)
+
+        # Foreground: part_of_route as bold arrows
+        for _, row in routes.iterrows():
+            src, dst = int(row['src']), int(row['dst'])
+            if src in fid_pos and dst in fid_pos:
+                x0, y0 = fid_pos[src]
+                x1, y1 = fid_pos[dst]
+                method = fid_method.get(src, 'Unknown')
+                color = method_colors.get(method, '#333333')
+                ax.annotate("", xy=(x1, y1), xytext=(x0, y0),
+                            arrowprops=dict(arrowstyle="-|>", color=color,
+                                            lw=1.8, mutation_scale=12),
+                            zorder=3)
+
+        # Nodes
+        for method, color in method_colors.items():
+            subset = facilities[facilities['method'] == method]
+            if not subset.empty:
+                ax.scatter(subset['longitude'], subset['latitude'],
+                           c=color, s=40, zorder=5, label=method,
+                           edgecolors='white', linewidths=0.3)
+
+        # Zoom to region with padding
+        lons = facilities['longitude']
+        lats = facilities['latitude']
+        pad_lon = max((lons.max() - lons.min()) * 0.15, 0.5)
+        pad_lat = max((lats.max() - lats.min()) * 0.15, 0.3)
+        ax.set_xlim(lons.min() - pad_lon, lons.max() + pad_lon)
+        ax.set_ylim(lats.min() - pad_lat, lats.max() + pad_lat)
+
+        n_routes = routes['route_id'].nunique() if not routes.empty else 0
+        ax.set_title(f"{region_name}\n"
+                     f"{len(facilities)} facilities, {n_routes} routes",
+                     fontsize=13)
+        ax.set_xlabel('Longitude')
+        ax.set_ylabel('Latitude')
+        ax.legend(loc='best', fontsize=8, title='Delivery Method')
+
+        plt.tight_layout()
+        safe_name = region_name.replace(' ', '_').replace('/', '_')
+        path = f"outputs/regional_directed_{safe_name}.png"
+        plt.savefig(path, dpi=150, bbox_inches="tight")
+        plt.close()
+        print(f"  Saved {path}")
+
+    print(f"Regional directed maps: {len(regions)} regions saved.")
+
+
+# ===========================================================================
+# Overall Graph with Gradient Edges
+# ===========================================================================
+
+def _make_gradient_line(x0, y0, x1, y1, cmap, n_segments=50, lw=1.5,
+                        alpha=0.8):
+    """Create a LineCollection with a color gradient from (x0,y0) to (x1,y1).
+
+    Returns a matplotlib.collections.LineCollection.
+    """
+    x = np.linspace(x0, x1, n_segments + 1)
+    y = np.linspace(y0, y1, n_segments + 1)
+    points = np.column_stack([x, y]).reshape(-1, 1, 2)
+    segments = np.concatenate([points[:-1], points[1:]], axis=1)
+    colors = cmap(np.linspace(0, 1, n_segments))
+    lc = mcoll.LineCollection(segments, colors=colors, linewidths=lw,
+                              alpha=alpha)
+    return lc
+
+
+def visualize_graph_gradient(con):
+    """Visualize the full graph database with gradient-colored directed edges.
+
+    Each edge is drawn as a color gradient from dark (source) to light
+    (destination), making flow direction visible without arrows.
+
+    - connects_to edges: faint gray gradient (background context)
+    - part_of_route edges: bold method-colored gradient (optimized routes)
+    - Nodes colored by region
+
+    Saves to outputs/graph_gradient.png
+    """
+    os.makedirs("outputs", exist_ok=True)
+
+    alaska = _load_alaska_boundary()
+
+    facilities_df = con.execute("""
+        SELECT f.facility_id, f.longitude, f.latitude,
+               li.region_name,
+               COALESCE(um.method_name, 'Unknown') AS method
+        FROM facilities f
+        JOIN located_in li ON f.facility_id = li.facility_id
+        LEFT JOIN uses_method um ON f.facility_id = um.facility_id
+        WHERE li.region_name != 'Unassigned'
+    """).fetchdf()
+
+    adjacency_df = con.execute("""
+        SELECT src, dst, distance_miles
+        FROM connects_to
+        WHERE distance_miles <= 100
+    """).fetchdf()
+
+    routes_df = con.execute("""
+        SELECT pr.src, pr.dst, pr.route_id, pr.sequence
+        FROM part_of_route pr
+        ORDER BY pr.route_id, pr.sequence
+    """).fetchdf()
+
+    fid_pos = {}
+    fid_method = {}
+    region_palette = [
+        '#e6194B', '#3cb44b', '#ffe119', '#4363d8', '#f58231',
+        '#911eb4', '#42d4f4', '#f032e6', '#bfef45', '#fabed4',
+        '#469990', '#dcbeff', '#9A6324', '#808000',
+    ]
+    region_colors = {}
+    node_colors = {}
+
+    for _, row in facilities_df.iterrows():
+        fid = int(row['facility_id'])
+        region = row['region_name']
+        fid_pos[fid] = (row['longitude'], row['latitude'])
+        fid_method[fid] = row['method']
+
+        if region not in region_colors:
+            region_colors[region] = region_palette[
+                len(region_colors) % len(region_palette)]
+        node_colors[fid] = region_colors[region]
+
+    # Gradient colormaps per delivery method (dark -> light)
+    method_cmaps = {
+        'Road': mcolors.LinearSegmentedColormap.from_list(
+            'road', ['#8B4513', '#FFD700']),
+        'Plane': mcolors.LinearSegmentedColormap.from_list(
+            'plane', ['#00008B', '#87CEEB']),
+        'Barge': mcolors.LinearSegmentedColormap.from_list(
+            'barge', ['#006400', '#90EE90']),
+        'Unknown': mcolors.LinearSegmentedColormap.from_list(
+            'unknown', ['#333333', '#CCCCCC']),
+    }
+    gray_cmap = mcolors.LinearSegmentedColormap.from_list(
+        'gray_grad', ['#AAAAAA', '#EEEEEE'])
+
+    fig, ax = plt.subplots(figsize=(18, 14))
+
+    if alaska is not None:
+        alaska.boundary.plot(ax=ax, color='#999999', linewidth=0.5, zorder=0)
+
+    # Background: adjacency edges as faint gradients
+    for _, row in adjacency_df.iterrows():
+        src, dst = int(row['src']), int(row['dst'])
+        if src in fid_pos and dst in fid_pos:
+            x0, y0 = fid_pos[src]
+            x1, y1 = fid_pos[dst]
+            lc = _make_gradient_line(x0, y0, x1, y1, gray_cmap,
+                                     n_segments=20, lw=0.4, alpha=0.15)
+            ax.add_collection(lc)
+
+    # Foreground: route edges as bold method-colored gradients
+    for _, row in routes_df.iterrows():
+        src, dst = int(row['src']), int(row['dst'])
+        if src in fid_pos and dst in fid_pos:
+            x0, y0 = fid_pos[src]
+            x1, y1 = fid_pos[dst]
+            method = fid_method.get(src, 'Unknown')
+            cmap = method_cmaps.get(method, method_cmaps['Unknown'])
+            lc = _make_gradient_line(x0, y0, x1, y1, cmap,
+                                     n_segments=40, lw=2.0, alpha=0.85)
+            ax.add_collection(lc)
+
+    # Nodes
+    for fid in fid_pos:
+        x, y = fid_pos[fid]
+        ax.scatter(x, y, c=node_colors.get(fid, '#333333'), s=25,
+                   zorder=5, edgecolors='white', linewidths=0.3)
+
+    # Legend: regions
+    for region, color in sorted(region_colors.items()):
+        ax.scatter([], [], c=color, label=f"{region}", s=50)
+
+    # Legend: delivery method gradients
+    for method, cmap in method_cmaps.items():
+        if method == 'Unknown':
+            continue
+        dark = cmap(0.0)
+        light = cmap(1.0)
+        ax.plot([], [], color=dark, linewidth=3,
+                label=f"{method} (dark=src)")
+        ax.plot([], [], color=light, linewidth=3,
+                label=f"{method} (light=dst)")
+
+    ax.legend(loc='center left', bbox_to_anchor=(1, 0.5), fontsize=8,
+              title='Regions & Routes')
+    ax.set_xlabel('Longitude')
+    ax.set_ylabel('Latitude')
+    ax.set_title('Graph Database: Directed Routes with Gradient Flow\n'
+                 '(dark = source, light = destination)',
+                 fontsize=14)
+    ax.autoscale_view()
+    plt.tight_layout()
+    plt.savefig("outputs/graph_gradient.png", dpi=150, bbox_inches="tight")
+    plt.close()
+
+    print(f"Graph gradient visualization saved: outputs/graph_gradient.png")
+    print(f"  Nodes: {len(fid_pos)}")
+    print(f"  Adjacency edges: {len(adjacency_df)}")
+    print(f"  Route edges: {len(routes_df)}")
 
 
 # ===========================================================================
