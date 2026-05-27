@@ -28,44 +28,24 @@ from typing import Iterable
 import numpy as np
 import rasterio
 
+from friction_config import (
+    FRICTION_NODATA,
+    ICE_PROB_THRESHOLD,
+    LULC_FRICTION,
+    LULC_WATER_CLASS,
+    MODES,
+    PERMAFROST_MAX_SHOULDER,
+    PERMAFROST_MAX_SUMMER,
+    PERMAFROST_SHOULDER_MONTHS,
+    PERMAFROST_SUMMER_MONTHS,
+    PERMAFROST_WINTER_MONTHS,
+    SLOPE_FRICTION,
+    SLOPE_THRESHOLDS,
+    WATER_FRICTION_BARGE,
+    WATER_FRICTION_ICEROAD,
+)
+
 logger = logging.getLogger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# Editable constants
-# ---------------------------------------------------------------------------
-
-SLOPE_THRESHOLDS = (2.0, 8.0)             # degrees
-SLOPE_FRICTION = (1.0, 1.4, 1.75)         # <2, 2-8, >=8
-
-# Dynamic World modal class codes (integer keys). value=None marks NoData
-# in the overland base; mode-specific surfaces handle water themselves.
-LULC_WATER_CLASS = 0
-LULC_FRICTION = {
-    0: None,    # water -> NoData in overland base
-    1: 1.46,    # trees
-    2: 1.15,    # grass
-    3: 1.63,    # flooded_vegetation
-    4: 1.10,    # crops
-    5: 1.15,    # shrub_scrub
-    6: 1.43,    # built_area
-    7: 1.16,    # bare_ground
-    8: 5.00,    # snow_ice
-}
-
-PERMAFROST_WINTER_MONTHS = {11, 12, 1, 2, 3, 4}
-PERMAFROST_SHOULDER_MONTHS = {5, 10}
-PERMAFROST_SUMMER_MONTHS = {6, 7, 8, 9}
-PERMAFROST_MAX_SHOULDER = 1.15            # at 100% permafrost in May / Oct
-PERMAFROST_MAX_SUMMER = 1.40              # at 100% permafrost in Jun-Sep
-
-ICE_PROB_THRESHOLD = 0.5                  # combined sea/river ice probability
-WATER_FRICTION_BARGE = 0.5                # ice-free water under barge mode
-WATER_FRICTION_ICEROAD = 0.8              # high-ice water under ice_road mode
-
-FRICTION_NODATA = -9999.0
-
-MODES = ("overland", "barge", "ice_road")
 
 
 # ---------------------------------------------------------------------------

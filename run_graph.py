@@ -1,11 +1,10 @@
 """run_graph.py
 
 Orchestration script for the DuckDB graph-based MAS pipeline. Calls:
-1. regionalization_graph.py  - Creates regionalization.duckdb graph database
-2. market_cost_analysis.py   - Market & cost analysis using graph DB
-3. friction_surface.py       - Friction raster computation (no LLM)
-4. friction_agents.py        - Seasonal, cost, and validation agents
-5. tsp_model_graph.py        - TSP route optimization using graph DB
+1. regionalization_graph.py     - Creates regionalization.duckdb graph database
+2. market_cost_analysis.py      - Market & cost analysis using graph DB
+3. run_friction_pipeline.py     - Deterministic friction surfaces + cost-distance edges
+4. tsp_model_graph.py           - TSP route optimization using graph DB
 
 All modules share the same DuckDB database file (regionalization.duckdb).
 """
@@ -16,8 +15,7 @@ import sys
 from pathlib import Path
 import regionalization_graph
 import market_cost_analysis
-import friction_surface
-import friction_agents
+import run_friction_pipeline
 import tsp_model_graph
 import pipeline
 
@@ -105,27 +103,21 @@ if __name__ == "__main__":
     print("=" * 60)
     run_step("market_cost_analysis", market_cost_analysis.main)
 
-    # Step 3: Friction Surface Computation - pure computation, no LLM
+    # Step 3: Friction surfaces + cost-distance edges - deterministic, no LLM
     print("\n" + "=" * 60)
-    print("STEP 3: Friction Surface Computation")
+    print("STEP 3: Friction Pipeline (surfaces + cost-distance edges)")
     print("=" * 60)
-    run_compute_step("friction_surface", friction_surface.main)
+    run_compute_step("friction_pipeline", run_friction_pipeline.main)
 
-    # Step 4: Friction Agents - seasonal, cost, and validation via CrewAI
+    # Step 4: TSP Route Optimization - reads & writes to graph DB
     print("\n" + "=" * 60)
-    print("STEP 4: Friction Agents (Seasonal, Cost, Validation)")
-    print("=" * 60)
-    run_step("friction_agents", friction_agents.main)
-
-    # Step 5: TSP Route Optimization - reads & writes to graph DB
-    print("\n" + "=" * 60)
-    print("STEP 5: TSP Route Optimization")
+    print("STEP 4: TSP Route Optimization")
     print("=" * 60)
     run_step("tsp_optimization", tsp_model_graph.main)
 
-    # Step 6: Copy JSON outputs to outputs folder
+    # Step 5: Copy JSON outputs to outputs folder
     print("\n" + "=" * 60)
-    print("STEP 6: Saving outputs")
+    print("STEP 5: Saving outputs")
     print("=" * 60)
     pipeline.save_json()
 
